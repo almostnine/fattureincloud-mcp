@@ -26,7 +26,9 @@
     "dist/index.js",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "PRIVACY.md",
+    "SECURITY.md",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -42,7 +44,8 @@
     "check": "npm run lint && npm run typecheck && npm test",
     "pack:mcpb": "bash scripts/build-mcpb.sh",
     "coverage:doc": "rm -rf coverage/ops && vitest run && tsx scripts/gen-coverage.ts",
-    "manifest": "tsx scripts/gen-manifest.ts"
+    "manifest": "tsx scripts/gen-manifest.ts",
+    "prepublishOnly": "npm run check && npm run build && node scripts/smoke-stdio.mjs dist/index.js readonly 17"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.2.0",
