@@ -174,7 +174,7 @@ Test di integrazione, disattivati di default (leggono `.env`, mai committato):
 - `FIC_IT_READONLY=1 npm run test:integration`: sola lettura sull'account reale; ogni richiesta che non sia GET viene bloccata in rete.
 - `FIC_IT_TRIAL=1 FIC_IT_TRIAL_TOKEN=... FIC_IT_TRIAL_COMPANY_ID=... npm run test:integration`: scritture solo su un account Trial; il test si ferma se il piano dell'azienda non è `trial`.
 
-Progettazione e analisi: [docs/ANALISI.md](docs/ANALISI.md), [docs/DESIGN.md](docs/DESIGN.md).
+Progettazione e analisi: [docs/ANALISI.md](docs/ANALISI.md), [docs/DESIGN.md](docs/DESIGN.md). Evoluzioni future (tra cui l'uso dall'app Claude sul telefono): [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Ringraziamenti
 
