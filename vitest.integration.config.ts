@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ['tests/integration/**/*.test.ts'],
     environment: 'node',
+    setupFiles: ['tests/setup.ts'],
     testTimeout: 120_000,
     fileParallelism: false,
   },

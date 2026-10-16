@@ -16,9 +16,9 @@ describe('fic_account_info', () => {
     const client = await connect(app);
     const res = await call(client, 'fic_account_info');
     expect(res.isError).toBe(false);
-    expect(res.data.azienda_attiva).toMatchObject({ id: 1001, piano: 'Standard' });
-    expect(res.data.modalita_server).toBe('readonly');
-    expect(res.data.quote_api).toMatchObject({ richieste_residue_ora: 990 });
+    expect(res.data.active_company).toMatchObject({ id: 1001, plan: 'Standard' });
+    expect(res.data.server_mode).toBe('readonly');
+    expect(res.data.api_quota).toMatchObject({ hourly_remaining: 990 });
     expect(JSON.parse(res.text)).toEqual(res.data);
   });
 
@@ -38,14 +38,14 @@ describe('fic_account_info', () => {
     const { app } = testApp({ fic, config: { companyId: undefined } });
     const res = await call(await connect(app), 'fic_account_info');
     expect(res.isError).toBe(false);
-    expect(res.data.problema).toContain('FIC_COMPANY_ID');
-    expect(res.data.aziende_accessibili).toHaveLength(2);
+    expect(res.data.problem).toContain('FIC_COMPANY_ID');
+    expect(res.data.companies).toHaveLength(2);
   });
 
   it('rifiuta un FIC_COMPANY_ID non accessibile', async () => {
     const fic = new FakeFic().withCompany().on('GET', '/user/info', { body: { data: { id: 9 } } });
     const { app } = testApp({ fic, config: { companyId: 4242 } });
     const res = await call(await connect(app), 'fic_account_info');
-    expect(res.data.problema).toContain('4242');
+    expect(res.data.problem).toContain('4242');
   });
 });

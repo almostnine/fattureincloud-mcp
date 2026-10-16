@@ -10,6 +10,7 @@ import type { Mode } from '../config.js';
 import type { AppContext } from '../context.js';
 import { cleanOutgoingText, untrusted } from '../safety/untrusted.js';
 import { defineTool } from './define.js';
+import { toolRegistry } from './registry.js';
 
 const API_REFERENCE = 'https://developers.fattureincloud.it/api-reference/';
 const MAX_OUTPUT_CHARS = 120_000;
@@ -145,9 +146,8 @@ function checkParams(op: CatalogOperation, pathParams: Params, query: Params): v
 const paramsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
 const pathParamsSchema = z.record(z.string(), z.union([z.string(), z.number()]));
 
-async function allTools() {
-  const { ALL_TOOLS } = await import('./index.js');
-  return ALL_TOOLS as Array<{ name: string; operations: string[] }>;
+function allTools() {
+  return toolRegistry.tools;
 }
 
 export const apiCatalog = defineTool({
@@ -174,7 +174,7 @@ Searches the full Fatture in Cloud API catalog; then run operations with fic_api
   }),
   operations: [],
   handler: async (args, app) => {
-    const tools = await allTools();
+    const tools = allTools();
     if (args.operation_id) {
       const op = findOp(args.operation_id);
       return {

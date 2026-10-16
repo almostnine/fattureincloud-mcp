@@ -1,0 +1,204 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/dist/mcpb-manifest-v0.3.schema.json",
+  "manifest_version": "0.3",
+  "name": "fattureincloud-mcp-server",
+  "display_name": "Fatture in Cloud MCP (non ufficiale)",
+  "version": "1.0.0",
+  "description": "Fatture, rate, incassi, clienti e situazione di Fatture in Cloud dentro Claude. Sola lettura di default.",
+  "long_description": "Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre tutte le 123 operazioni dell'API.\n\n- **Sola lettura di default**: in modalità `readonly` i tool di scrittura e di invio non esistono proprio.\n- **Modalità `write`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate, cancellazioni con anteprima e conferma.\n- **Modalità `full`**: anche invio allo SDI ed email, sempre con anteprima e token di conferma.\n- Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.\n\nNon affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: https://github.com/almostnine/fattureincloud-mcp",
+  "author": {
+    "name": "Marco Di Santo",
+    "url": "https://github.com/almostnine"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/almostnine/fattureincloud-mcp.git"
+  },
+  "homepage": "https://github.com/almostnine/fattureincloud-mcp",
+  "documentation": "https://github.com/almostnine/fattureincloud-mcp#readme",
+  "support": "https://github.com/almostnine/fattureincloud-mcp/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "FIC_ACCESS_TOKEN": "${user_config.fic_access_token}",
+        "FIC_COMPANY_ID": "${user_config.fic_company_id}",
+        "FIC_MODE": "${user_config.fic_mode}",
+        "FIC_DEFAULT_PAYMENT_ACCOUNT_ID": "${user_config.fic_default_payment_account_id}",
+        "FIC_EMAIL_ALLOWED_RECIPIENTS": "${user_config.fic_email_allowed_recipients}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "fic_account_info",
+      "description": "Informazioni sull'account Fatture in Cloud collegato: utente, aziende accessibili con il loro piano, azienda attiva, modalità del server (readonly, write, full), quote di richieste API residue e, facoltativamente, l'uso dei limiti del piano (modalità readonly)."
+    },
+    {
+      "name": "fic_list_issued_documents",
+      "description": "Elenca fatture, note di credito, proforma, preventivi, ordini, DDT e gli altri documenti emessi, con filtri per periodo, cliente, numero, stato di pagamento e stato SDI (modalità readonly)."
+    },
+    {
+      "name": "fic_get_issued_document",
+      "description": "Dettaglio di un documento emesso, per ID oppure per numero e anno (\"dettaglio della fattura 33/2026\" -> {number:33, year:2026}) (modalità readonly)."
+    },
+    {
+      "name": "fic_list_installments",
+      "description": "Elenca le singole rate (scadenze di pagamento) di tutti i documenti, una riga per rata, con stato, giorni di ritardo, conto e data di pagamento (modalità readonly)."
+    },
+    {
+      "name": "fic_get_einvoice",
+      "description": "Stato SDI di un documento emesso, con la spiegazione in italiano (modalità readonly)."
+    },
+    {
+      "name": "fic_download_file",
+      "description": "Salva su disco, nella cartella FIC_DOWNLOAD_DIR, il PDF di un documento emesso, il PDF del DDT collegato, l'allegato oppure l'XML della fattura elettronica, e restituisce il percorso del file (modalità readonly)."
+    },
+    {
+      "name": "fic_search_entities",
+      "description": "Cerca clienti (default) o fornitori nell'anagrafica per nome, codice, partita IVA, codice fiscale o email; senza query li elenca tutti, a pagine (modalità readonly)."
+    },
+    {
+      "name": "fic_get_entity",
+      "description": "Scheda completa di un cliente o fornitore: dati fiscali, indirizzo, contatti, codice SDI, termini e metodo di pagamento predefiniti (modalità readonly)."
+    },
+    {
+      "name": "fic_situation",
+      "description": "Riepilogo economico di un periodo (default: anno corrente), calcolato leggendo tutte le pagine: (modalità readonly)."
+    },
+    {
+      "name": "fic_list_received_documents",
+      "description": "Elenca spese e documenti ricevuti (fatture passive, note di credito passive, DDT passivi, autofatture), con filtri per periodo, fornitore e descrizione (modalità readonly)."
+    },
+    {
+      "name": "fic_get_received_document",
+      "description": "Dettaglio di un documento ricevuto (righe, importi, rate, fornitore) oppure, con pending: true, di un documento in attesa di registrazione (modalità readonly)."
+    },
+    {
+      "name": "fic_list_cashbook",
+      "description": "Movimenti di prima nota (entrate e uscite registrate) in un intervallo di date, filtrabili per tipo e conto di saldo (modalità readonly)."
+    },
+    {
+      "name": "fic_reference_data",
+      "description": "Elenchi di riferimento dell'azienda e generali: payment_accounts (conti di saldo (banca, cassa...) su cui registrare gli incassi); payment_methods (metodi di pagamento (bonifico, contanti...)); vat_types (aliquote IVA e nature (N2.2 forfettario, esenzioni...): le righe dei documenti vanno indicate per id); cost_centers (centri di costo); revenue_centers (centri di ricavo); received_document_categories (categorie delle spese); product_categories (categorie dei prodotti); archive_categories (categorie dell’archivio); templates (modelli grafici dell’azienda); default_templates (modelli grafici predefiniti); price_lists (listini prezzi); currencies (valute); countries (paesi); detailed_countries (paesi con codici ISO); languages (lingue dei documenti); units_of_measure (unità di misura); delivery_note_causals (causali di trasporto dei DDT); cities (comuni italiani (serve postal_code o city)) (modalità readonly)."
+    },
+    {
+      "name": "fic_reconcile",
+      "description": "Confronta i movimenti in entrata dell'estratto conto (data, importo, causale) con le rate non pagate delle fatture e propone gli abbinamenti, con un grado di confidenza (high, medium, low) e i motivi: importo uguale a una rata o a tutto il residuo, nome del cliente o numero della fattura nella causale, data vicina alla scadenza (modalità readonly)."
+    },
+    {
+      "name": "fic_api_catalog",
+      "description": "Cerca tra tutte le 123 operazioni dell'API v2 di Fatture in Cloud (OpenAPI 2.1.8, https://developers.fattureincloud.it/api-reference/) per parola chiave, gruppo o effetto (modalità readonly)."
+    },
+    {
+      "name": "fic_api_read",
+      "description": "Esegue qualsiasi operazione di sola lettura dell'API di Fatture in Cloud (https://developers.fattureincloud.it/api-reference/) per operationId, con parametri di percorso e di query (anche q, sort, fields, fieldset, page, per_page) (modalità readonly)."
+    },
+    {
+      "name": "fic_clear_cache",
+      "description": "Svuota la cache locale del server (in memoria e, se attiva, su disco) (modalità readonly)."
+    },
+    {
+      "name": "fic_set_installment_status",
+      "description": "Segna una rata di un documento emesso come pagata (con conto di saldo e data di pagamento) oppure come non pagata (modalità write)."
+    },
+    {
+      "name": "fic_create_entity",
+      "description": "Crea un cliente (default) o un fornitore in anagrafica (modalità write)."
+    },
+    {
+      "name": "fic_update_entity",
+      "description": "Modifica i campi indicati di un cliente o fornitore; i campi non indicati restano invariati (modalità write)."
+    },
+    {
+      "name": "fic_create_issued_document",
+      "description": "Crea una fattura, nota di credito, proforma, preventivo, ordine, DDT o altro documento emesso per un cliente esistente (modalità write)."
+    },
+    {
+      "name": "fic_update_issued_document",
+      "description": "Modifica un documento emesso: oggetto, note, data, metodo di pagamento, righe (sostituite in blocco) o rate (modalità write)."
+    },
+    {
+      "name": "fic_convert_issued_document",
+      "description": "Converte un documento in un altro tipo con la funzione ufficiale di Fatture in Cloud, che mantiene il collegamento tra i due: proforma in fattura o ricevuta; preventivo o rapportino in ordine, proforma, ricevuta o fattura; ordine in proforma, ricevuta o fattura (modalità write)."
+    },
+    {
+      "name": "fic_duplicate_issued_document",
+      "description": "Duplica un documento emesso con una nuova data: copia cliente (dati aggiornati dall'anagrafica), righe con le stesse aliquote, sconti, ritenute, cassa, bollo, metodo di pagamento e sezionale; rigenera numero, rate (stesse distanze e proporzioni) e campi SDI (modalità write)."
+    },
+    {
+      "name": "fic_delete",
+      "description": "Cancella un elemento in Fatture in Cloud: documento emesso o ricevuto, cliente, fornitore, prodotto, corrispettivo, F24, documento d'archivio, movimento di prima nota, conto di saldo, metodo di pagamento, aliquota IVA, sottoscrizione webhook, allegato, oppure svuota definitivamente un documento dal cestino (modalità write)."
+    },
+    {
+      "name": "fic_api_write",
+      "description": "Esegue un'operazione di creazione o modifica dell'API di Fatture in Cloud (https://developers.fattureincloud.it/api-reference/) per operationId: prodotti, corrispettivi, F24, archivio, prima nota, impostazioni (conti, metodi di pagamento, aliquote), recupero dal cestino, caricamento di allegati (modalità write)."
+    },
+    {
+      "name": "fic_send_einvoice",
+      "description": "Invia allo SDI una fattura elettronica già creata (modalità full)."
+    },
+    {
+      "name": "fic_send_email",
+      "description": "Invia un documento emesso per email tramite Fatture in Cloud (per esempio la copia di cortesia della fattura o un sollecito con il documento allegato) (modalità full)."
+    }
+  ],
+  "tools_generated": false,
+  "keywords": [
+    "fatture in cloud",
+    "fatturazione elettronica",
+    "fatture",
+    "sdi",
+    "contabilità",
+    "italia",
+    "invoices"
+  ],
+  "license": "MIT",
+  "privacy_policies": [
+    "https://github.com/almostnine/fattureincloud-mcp/blob/main/PRIVACY.md",
+    "https://www.fattureincloud.it/privacy/"
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  },
+  "user_config": {
+    "fic_access_token": {
+      "type": "string",
+      "title": "Token di accesso Fatture in Cloud",
+      "description": "Token personale: Fatture in Cloud > Impostazioni > Applicazioni collegate. Per la sola lettura bastano gli scope \":r\". Viene salvato nel portachiavi del sistema.",
+      "sensitive": true,
+      "required": true
+    },
+    "fic_company_id": {
+      "type": "number",
+      "title": "ID azienda (facoltativo)",
+      "description": "Necessario solo se il token vede più aziende. Lo trovi con il tool fic_account_info.",
+      "required": false,
+      "min": 1
+    },
+    "fic_mode": {
+      "type": "string",
+      "title": "Modalità",
+      "description": "readonly (default, solo lettura), write (crea e modifica, cancella con conferma), full (anche invio SDI ed email, con conferma). Qualsiasi altro valore vale readonly.",
+      "default": "readonly",
+      "required": false
+    },
+    "fic_default_payment_account_id": {
+      "type": "number",
+      "title": "Conto di saldo predefinito (facoltativo)",
+      "description": "ID del conto usato quando segni una rata pagata senza indicarlo. Elenco con fic_reference_data.",
+      "required": false,
+      "min": 1
+    },
+    "fic_email_allowed_recipients": {
+      "type": "string",
+      "title": "Destinatari email aggiuntivi (facoltativo)",
+      "description": "Indirizzi, separati da virgola, a cui si può inviare oltre a quelli dei clienti in anagrafica (per esempio il commercialista).",
+      "required": false
+    }
+  }
+}

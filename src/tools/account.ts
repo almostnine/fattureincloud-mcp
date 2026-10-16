@@ -33,7 +33,7 @@ async function planUsage(app: AppContext): Promise<Record<string, unknown>> {
         path: '/c/{company_id}/company/plan_usage',
         query: { category },
       });
-      out[category] = { usati: res?.data?.usage, limite: res?.data?.limit };
+      out[category] = { used: res?.data?.usage, limit: res?.data?.limit };
     } catch {
       // l'uso del piano è accessorio: non deve far fallire il resto
     }
@@ -68,22 +68,22 @@ Shows the connected Fatture in Cloud account, accessible companies, active compa
     const companies = await app.listCompanies();
     const u = user?.data;
     const base = {
-      utente: {
+      user: {
         id: u?.id,
-        nome: u?.name ?? [u?.first_name, u?.last_name].filter(Boolean).join(' '),
+        name: u?.name ?? [u?.first_name, u?.last_name].filter(Boolean).join(' '),
         email: u?.email,
       },
-      aziende_accessibili: companies.map((c) => ({ id: c.id, nome: c.name, piano: c.fic_plan })),
-      modalita_server: app.config.mode,
-      versione_server: VERSION,
-      versione_api: SPEC_VERSION,
+      companies: companies.map((c) => ({ id: c.id, name: c.name, plan: c.fic_plan })),
+      server_mode: app.config.mode,
+      server_version: VERSION,
+      api_version: SPEC_VERSION,
     };
     let active: Awaited<ReturnType<typeof app.activeCompany>>;
     try {
       active = await app.activeCompany();
     } catch (err) {
       // Proprio quando l'azienda è configurata male questo tool deve dire quali sono disponibili.
-      if (err instanceof FicError && err.kind === 'config') return { ...base, problema: err.message };
+      if (err instanceof FicError && err.kind === 'config') return { ...base, problem: err.message };
       throw err;
     }
     const client = await app.api();
@@ -95,19 +95,19 @@ Shows the connected Fatture in Cloud account, accessible companies, active compa
     const usage = args.include_plan_usage ? await planUsage(app) : undefined;
     return {
       ...base,
-      azienda_attiva: {
+      active_company: {
         id: active.id,
-        nome: info?.data?.name ?? active.name,
-        piano: info?.data?.fic_plan_name ?? active.fic_plan,
-        scadenza_licenza: info?.data?.fic_license_expire ?? active.fic_license_expire,
+        name: info?.data?.name ?? active.name,
+        plan: info?.data?.fic_plan_name ?? active.fic_plan,
+        license_expires: info?.data?.fic_license_expire ?? active.fic_license_expire,
       },
-      quote_api: {
-        richieste_residue_ora: client.quota.hourlyRemaining,
-        limite_orario: client.quota.hourlyLimit,
-        richieste_residue_mese: client.quota.monthlyRemaining,
-        limite_mensile: client.quota.monthlyLimit,
+      api_quota: {
+        hourly_remaining: client.quota.hourlyRemaining,
+        hourly_limit: client.quota.hourlyLimit,
+        monthly_remaining: client.quota.monthlyRemaining,
+        monthly_limit: client.quota.monthlyLimit,
       },
-      uso_piano: usage,
+      plan_usage: usage,
     };
   },
 });

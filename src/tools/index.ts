@@ -16,6 +16,7 @@ import {
 import { getReceivedDocument, listCashbook, listReceivedDocuments } from './received-documents.js';
 import { reconcile } from './reconcile.js';
 import { referenceData } from './reference-data.js';
+import { toolRegistry } from './registry.js';
 import { sendEInvoice, sendEmail } from './send.js';
 import { situation } from './situation.js';
 
@@ -54,3 +55,5 @@ export const ALL_TOOLS: ToolDef<any>[] = [
   sendEInvoice,
   sendEmail,
 ];
+
+toolRegistry.tools = ALL_TOOLS;
