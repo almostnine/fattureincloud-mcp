@@ -1,7 +1,7 @@
 {
   "name": "fattureincloud-mcp-server",
   "version": "0.1.0",
-  "description": "Server MCP per Fatture in Cloud: copertura completa dell'API v2, sola lettura di default, sicurezza a più livelli",
+  "description": "Server MCP per Fatture in Cloud: copertura completa dell'API v2, sola lettura di default, sicurezza a pi\u00f9 livelli",
   "license": "MIT",
   "author": "Marco Di Santo (https://github.com/almostnine)",
   "repository": {
@@ -40,7 +40,8 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "check": "npm run lint && npm run typecheck && npm test",
-    "pack:mcpb": "bash scripts/build-mcpb.sh"
+    "pack:mcpb": "bash scripts/build-mcpb.sh",
+    "coverage:doc": "rm -rf coverage/ops && vitest run && tsx scripts/gen-coverage.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.2.0",

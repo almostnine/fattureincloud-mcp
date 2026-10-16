@@ -1,4 +1,20 @@
 /** fetch finto per i test: risposte per metodo e percorso, registro delle chiamate. Nessuna rete. */
+import { OPERATIONS } from '../../src/api/catalog.generated.js';
+
+/** Operazioni del catalogo esercitate dai test, per docs/COVERAGE.md (vedi tests/setup.ts). */
+export const exercisedOperations = new Set<string>();
+
+const MATCHERS = OPERATIONS.map((o) => ({
+  id: o.id,
+  method: o.method,
+  re: new RegExp(`^${o.path.replace(/\{[a-z_]+\}/g, '[^/]+')}$`),
+  literal: o.path.replace(/\{[a-z_]+\}/g, '').length,
+})).sort((a, b) => b.literal - a.literal);
+
+function recordOperation(method: string, path: string): void {
+  const m = MATCHERS.find((x) => x.method === method && x.re.test(path));
+  if (m) exercisedOperations.add(m.id);
+}
 
 export interface FakeResponse {
   status?: number;
@@ -59,6 +75,7 @@ export class FakeFic {
       headers,
     };
     this.calls.push(call);
+    if (url.hostname === 'api-v2.fattureincloud.it') recordOperation(call.method, call.path);
     const route = this.routes.find((r) => r.method === call.method && r.pattern.test(call.path));
     if (!route) {
       return new Response(
