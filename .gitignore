@@ -1,0 +1,21 @@
+# Progetti studiati solo come riferimento, mai nel repository
+reference/
+
+# Segreti
+.env
+.env.*
+!.env.example
+
+# Build e dipendenze
+node_modules/
+dist/
+build/
+*.mcpb
+coverage/
+.venv/
+__pycache__/
+*.pyc
+
+# Sistema
+.DS_Store
+*.log
