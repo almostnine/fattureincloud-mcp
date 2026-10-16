@@ -1,0 +1,162 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { z } from 'zod';
+import { FicError, refused } from '../api/errors.js';
+import { callOp } from '../api/ops.js';
+import { displayNumber, EI_STATUS_IT } from '../domain/documents.js';
+import type { DataResponse, IssuedDocument } from '../domain/types.js';
+import { untrusted } from '../safety/untrusted.js';
+import { defineTool } from './define.js';
+import { getIssued } from './issued-documents.js';
+
+const NEEDS_REASON = new Set(['error', 'discarded', 'rejected', 'manual_rejected', 'not_delivered']);
+
+export const getEInvoice = defineTool({
+  name: 'fic_get_einvoice',
+  title: 'Stato della fattura elettronica',
+  description: `Stato SDI di un documento emesso, con la spiegazione in italiano. Se la fattura è stata scartata, rifiutata o non consegnata riporta il motivo. Con verify_xml controlla l'XML (campi obbligatori e formato) senza inviare nulla.
+Stati: ${Object.entries(EI_STATUS_IT)
+    .map(([k, v]) => `${k} = ${v}`)
+    .join('; ')}.
+Shows the SDI status of an e-invoice, the rejection reason and optionally verifies the XML.`,
+  minMode: 'readonly',
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  input: z.object({
+    document_id: z.number().int().positive(),
+    verify_xml: z.boolean().default(false).describe('Verifica l’XML della fattura elettronica.'),
+  }),
+  operations: ['getIssuedDocument', 'getEInvoiceRejectionReason', 'verifyEInvoiceXml'],
+  handler: async (args, app) => {
+    const doc = await getIssued(app, args.document_id);
+    const client = await app.api();
+    const status = doc.ei_status ?? undefined;
+    let reason: Record<string, unknown> | undefined;
+    if (status && NEEDS_REASON.has(status)) {
+      try {
+        const r = await callOp<DataResponse<{ reason?: string; code?: string; date?: string }>>(
+          client,
+          'getEInvoiceRejectionReason',
+          {
+            pathParams: { document_id: args.document_id },
+          },
+        );
+        reason = { reason: untrusted(r?.data?.reason), code: r?.data?.code, date: r?.data?.date };
+      } catch (err) {
+        if (!(err instanceof FicError) || err.kind !== 'not_found') throw err;
+      }
+    }
+    let verification: Record<string, unknown> | undefined;
+    if (args.verify_xml) {
+      try {
+        await callOp(client, 'verifyEInvoiceXml', { pathParams: { document_id: args.document_id } });
+        verification = { valid: true };
+      } catch (err) {
+        if (err instanceof FicError && err.kind === 'validation') {
+          verification = {
+            valid: false,
+            errors: err.details.validation?.length ? err.details.validation : [err.details.apiMessage],
+          };
+        } else throw err;
+      }
+    }
+    return {
+      document_id: doc.id,
+      number: displayNumber(doc),
+      date: doc.date,
+      e_invoice: Boolean(doc.e_invoice),
+      status: status ?? (doc.e_invoice ? 'not_sent' : undefined),
+      status_meaning: status
+        ? EI_STATUS_IT[status]
+        : doc.e_invoice
+          ? EI_STATUS_IT.not_sent
+          : 'documento non elettronico',
+      locked: doc.locked || undefined,
+      recipient: doc.entity
+        ? {
+            ei_code: doc.entity.ei_code ?? undefined,
+            certified_email: doc.entity.certified_email ?? undefined,
+          }
+        : undefined,
+      rejection: reason,
+      xml_verification: verification,
+    };
+  },
+});
+
+/** Host da cui il server accetta di scaricare i file dei documenti (link temporanei restituiti da FIC). */
+export function isAllowedFileHost(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    return u.hostname === 'fattureincloud.it' || u.hostname.endsWith('.fattureincloud.it');
+  } catch {
+    return false;
+  }
+}
+
+function safeName(s: string): string {
+  return (
+    s
+      .replace(/[^A-Za-z0-9._-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80) || 'documento'
+  );
+}
+
+export const downloadFile = defineTool({
+  name: 'fic_download_file',
+  title: 'Scarica PDF o XML di un documento',
+  description: `Salva su disco, nella cartella FIC_DOWNLOAD_DIR, il PDF di un documento emesso, il PDF del DDT collegato, l'allegato oppure l'XML della fattura elettronica, e restituisce il percorso del file. Non modifica nulla in Fatture in Cloud.
+Usalo quando serve il file e non basta il link temporaneo restituito da fic_get_issued_document.
+Saves the PDF, delivery note, attachment or e-invoice XML of an issued document to a local folder.`,
+  minMode: 'readonly',
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  input: z.object({
+    document_id: z.number().int().positive(),
+    kind: z.enum(['pdf', 'xml', 'delivery_note', 'attachment']).default('pdf'),
+  }),
+  operations: ['getIssuedDocument', 'getEInvoiceXml'],
+  handler: async (args, app) => {
+    const doc: IssuedDocument = await getIssued(app, args.document_id);
+    const base = safeName(
+      `${doc.type ?? 'documento'}_${displayNumber(doc) ?? doc.id}_${doc.date ?? ''}_${doc.id}`,
+    );
+    const dir = resolve(app.config.downloadDir);
+    mkdirSync(dir, { recursive: true });
+    let bytes: Buffer;
+    let file: string;
+    if (args.kind === 'xml') {
+      if (!doc.e_invoice) throw refused('Il documento non è una fattura elettronica: non ha un XML.');
+      const client = await app.api();
+      const xml = await callOp<string>(client, 'getEInvoiceXml', {
+        pathParams: { document_id: args.document_id },
+        responseType: 'text',
+      });
+      bytes = Buffer.from(xml, 'utf8');
+      file = join(dir, `${base}.xml`);
+    } else {
+      const url =
+        args.kind === 'pdf' ? doc.url : args.kind === 'delivery_note' ? doc.dn_url : doc.attachment_url;
+      if (!url)
+        throw refused(
+          `Il documento non ha ${args.kind === 'pdf' ? 'un PDF' : args.kind === 'delivery_note' ? 'un DDT collegato' : 'un allegato'}.`,
+        );
+      if (!isAllowedFileHost(url)) {
+        throw refused(
+          `Il link del file punta a un host non previsto (${new URL(url).hostname}): download non eseguito per sicurezza. Usa il link da fic_get_issued_document.`,
+        );
+      }
+      // Link firmato e temporaneo: niente header di autenticazione verso questo host.
+      const res = await app.httpFetch(url, { signal: AbortSignal.timeout(60_000), redirect: 'error' });
+      if (!res.ok)
+        throw new FicError('server', `Download non riuscito (HTTP ${res.status})`, { status: res.status });
+      bytes = Buffer.from(await res.arrayBuffer());
+      file = join(
+        dir,
+        `${base}${args.kind === 'attachment' ? '_allegato' : args.kind === 'delivery_note' ? '_ddt' : ''}.pdf`,
+      );
+    }
+    writeFileSync(file, bytes, { mode: 0o600 });
+    return { document_id: doc.id, kind: args.kind, path: file, bytes: bytes.length };
+  },
+});

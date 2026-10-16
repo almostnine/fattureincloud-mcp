@@ -24,6 +24,8 @@ export class AppContext {
   readonly cache: Cache;
   readonly confirm: ConfirmService;
   readonly now: () => Date;
+  /** fetch per i file dei documenti (link temporanei); iniettabile nei test. */
+  readonly httpFetch: typeof fetch;
   private readonly clientValue: FicClient | undefined;
   private company: Company | undefined;
   private companies: Company[] | undefined;
@@ -40,6 +42,7 @@ export class AppContext {
     this.config = opts.config;
     this.log = opts.log;
     this.now = opts.now ?? (() => new Date());
+    this.httpFetch = opts.fetch ?? fetch;
     this.confirm = opts.confirm ?? new ConfirmService();
     this.cache = new Cache({
       mode: opts.config.cache,

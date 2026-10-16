@@ -1,0 +1,327 @@
+import { z } from 'zod';
+import { refused } from '../api/errors.js';
+import { fetchAll, fetchPage } from '../api/paginate.js';
+import type { AppContext } from '../context.js';
+import { todayRome } from '../domain/dates.js';
+import { entityName } from '../domain/documents.js';
+import { installmentRows } from '../domain/installments.js';
+import { fromCents, toCents } from '../domain/money.js';
+import { Q } from '../domain/query.js';
+import type { DataResponse, Entity, IssuedDocument } from '../domain/types.js';
+import { cleanOutgoingText, untrusted } from '../safety/untrusted.js';
+import { pagingShape } from './common.js';
+import { defineTool } from './define.js';
+
+const kindSchema = z
+  .enum(['client', 'supplier'])
+  .default('client')
+  .describe('client (cliente) o supplier (fornitore).');
+
+const PATHS = {
+  client: {
+    list: '/c/{company_id}/entities/clients',
+    one: '/c/{company_id}/entities/clients/{id}',
+    listOp: 'listClients',
+    getOp: 'getClient',
+    createOp: 'createClient',
+    modifyOp: 'modifyClient',
+    param: 'client_id',
+  },
+  supplier: {
+    list: '/c/{company_id}/entities/suppliers',
+    one: '/c/{company_id}/entities/suppliers/{id}',
+    listOp: 'listSuppliers',
+    getOp: 'getSupplier',
+    createOp: 'createSupplier',
+    modifyOp: 'modifySupplier',
+    param: 'supplier_id',
+  },
+} as const;
+
+function entityPath(kind: 'client' | 'supplier'): string {
+  return PATHS[kind].one.replace('{id}', `{${PATHS[kind].param}}`);
+}
+
+export function entitySummary(e: Entity) {
+  return {
+    id: e.id,
+    name: untrusted(entityName(e), 200),
+    code: e.code || undefined,
+    type: e.type || undefined,
+    vat_number: e.vat_number || undefined,
+    tax_code: e.tax_code || undefined,
+    city: e.address_city || undefined,
+    email: e.email || undefined,
+    certified_email: e.certified_email || undefined,
+  };
+}
+
+export function entityDetail(e: Entity) {
+  return {
+    ...entitySummary(e),
+    first_name: e.first_name || undefined,
+    last_name: e.last_name || undefined,
+    contact_person: untrusted(e.contact_person, 200),
+    address: {
+      street: untrusted(e.address_street, 200),
+      postal_code: e.address_postal_code,
+      city: e.address_city,
+      province: e.address_province,
+      extra: untrusted(e.address_extra, 200),
+      country: e.country,
+      country_iso: e.country_iso,
+    },
+    phone: e.phone,
+    ei_code: e.ei_code,
+    e_invoice: e.e_invoice ?? undefined,
+    default_payment_terms: e.default_payment_terms ?? undefined,
+    default_payment_terms_type: e.default_payment_terms_type ?? undefined,
+    default_vat:
+      e.default_vat?.id !== undefined && e.default_vat?.id !== null
+        ? { id: e.default_vat.id, rate: e.default_vat.value }
+        : undefined,
+    default_payment_method: e.default_payment_method?.id
+      ? { id: e.default_payment_method.id, name: e.default_payment_method.name ?? undefined }
+      : undefined,
+    bank_iban: e.bank_iban,
+    notes: untrusted(e.notes),
+    updated_at: e.updated_at,
+  };
+}
+
+/** Riconosce P.IVA, codice fiscale ed email nella ricerca libera. */
+function searchQuery(text: string): Q {
+  const t = text.trim();
+  const q = new Q();
+  const vat = t.replace(/^IT/i, '').replace(/\s/g, '');
+  if (/^\d{11}$/.test(vat))
+    return q.anyOf(
+      new Q().strEq('vat_number', vat),
+      new Q().strEq('vat_number', `IT${vat}`),
+      new Q().strEq('tax_code', vat),
+    );
+  if (/^[A-Za-z0-9]{16}$/.test(t)) return q.strEq('tax_code', t.toUpperCase());
+  if (t.includes('@') && !t.includes("'"))
+    return q.anyOf(new Q().strEq('email', t), new Q().strEq('certified_email', t));
+  return q.anyOf(new Q().textContains('name', t), new Q().textContains('code', t));
+}
+
+export async function getEntity(app: AppContext, kind: 'client' | 'supplier', id: number): Promise<Entity> {
+  const client = await app.api();
+  const p = PATHS[kind];
+  const res = await client.request<DataResponse<Entity>>({
+    operationId: p.getOp,
+    method: 'GET',
+    path: entityPath(kind),
+    pathParams: { [p.param]: id },
+    query: { fieldset: 'detailed' },
+  });
+  if (!res?.data) throw refused(`${kind === 'client' ? 'Cliente' : 'Fornitore'} ${id} non trovato.`);
+  return res.data;
+}
+
+export const searchEntities = defineTool({
+  name: 'fic_search_entities',
+  title: 'Cerca clienti e fornitori',
+  description: `Cerca clienti (default) o fornitori nell'anagrafica per nome, codice, partita IVA, codice fiscale o email; senza query li elenca tutti, a pagine.
+Esempi: {query:"Rossi"}; {query:"01234567890"}; {kind:"supplier", query:"Enel"}.
+Searches clients or suppliers by name, code, VAT number, tax code or email.`,
+  minMode: 'readonly',
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  input: z.object({
+    kind: kindSchema,
+    query: z.string().min(1).max(100).optional().describe('Nome, codice, P.IVA, codice fiscale o email.'),
+    sort: z.enum(['name', '-name', 'created_at', '-created_at', 'updated_at', '-updated_at']).default('name'),
+    ...pagingShape,
+  }),
+  operations: ['listClients', 'listSuppliers'],
+  handler: async (args, app) => {
+    const client = await app.api();
+    const p = PATHS[args.kind];
+    const spec = {
+      operationId: p.listOp,
+      path: p.list,
+      query: {
+        q: args.query ? searchQuery(args.query).build() : undefined,
+        sort: args.sort,
+        fieldset: 'detailed',
+      },
+    };
+    if (args.all_pages) {
+      const all = await fetchAll<Entity>(client, spec, app.config.maxPages);
+      return {
+        kind: args.kind,
+        items: all.items.map(entitySummary),
+        total: all.total,
+        truncated: all.truncated || undefined,
+      };
+    }
+    const page = await fetchPage<Entity>(client, spec, args.page, args.per_page);
+    return {
+      kind: args.kind,
+      items: page.items.map(entitySummary),
+      page: page.page,
+      total: page.total,
+      has_more: page.hasMore,
+      next_page: page.hasMore ? page.page + 1 : undefined,
+    };
+  },
+});
+
+export const getEntityTool = defineTool({
+  name: 'fic_get_entity',
+  title: 'Dettaglio cliente o fornitore',
+  description: `Scheda completa di un cliente o fornitore: dati fiscali, indirizzo, contatti, codice SDI, termini e metodo di pagamento predefiniti. Per i clienti, con include_open_installments, aggiunge le rate non pagate e scadute del cliente.
+Shows a client or supplier; for clients optionally adds unpaid and overdue installments.`,
+  minMode: 'readonly',
+  annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  input: z.object({
+    kind: kindSchema,
+    id: z.number().int().positive(),
+    include_open_installments: z
+      .boolean()
+      .default(false)
+      .describe('Solo clienti: aggiunge rate non pagate e scadute.'),
+  }),
+  operations: ['getClient', 'getSupplier', 'listIssuedDocuments'],
+  handler: async (args, app) => {
+    const e = await getEntity(app, args.kind, args.id);
+    const out: Record<string, unknown> = { kind: args.kind, ...entityDetail(e) };
+    if (args.kind === 'client' && args.include_open_installments) {
+      const today = todayRome(app.now());
+      const all = await fetchAll<IssuedDocument>(
+        await app.api(),
+        {
+          operationId: 'listIssuedDocuments',
+          path: '/c/{company_id}/issued_documents',
+          query: {
+            type: 'invoice',
+            q: new Q().eq('entity.id', args.id).raw('next_due_date is not null').build(),
+            fields: 'id,type,number,numeration,date,entity,payments_list',
+          },
+        },
+        app.config.maxPages,
+      );
+      const rows = installmentRows(all.items, { status: 'not_paid', today });
+      out.open_installments = {
+        count: rows.length,
+        amount: fromCents(rows.reduce((a, r) => a + toCents(r.amount), 0)),
+        overdue_amount: fromCents(rows.filter((r) => r.overdue).reduce((a, r) => a + toCents(r.amount), 0)),
+        items: rows.map(({ client_id, client_name, client_email, client_certified_email, ...r }) => r),
+      };
+    }
+    return out;
+  },
+});
+
+const entityFields = {
+  name: z.string().min(1).max(250).optional().describe('Ragione sociale o nome completo.'),
+  type: z
+    .enum(['company', 'person', 'pa', 'condo'])
+    .optional()
+    .describe('company (azienda), person (privato), pa (pubblica amministrazione), condo (condominio).'),
+  first_name: z.string().max(100).optional(),
+  last_name: z.string().max(100).optional(),
+  code: z.string().max(50).optional().describe('Codice interno.'),
+  vat_number: z.string().max(30).optional().describe('Partita IVA.'),
+  tax_code: z.string().max(30).optional().describe('Codice fiscale.'),
+  address_street: z.string().max(200).optional(),
+  address_postal_code: z.string().max(20).optional(),
+  address_city: z.string().max(100).optional(),
+  address_province: z.string().max(5).optional(),
+  address_extra: z.string().max(200).optional(),
+  country: z.string().max(60).optional().describe('Paese, per esempio "Italia".'),
+  email: z.string().email().optional(),
+  certified_email: z.string().email().optional().describe('PEC.'),
+  phone: z.string().max(40).optional(),
+  contact_person: z.string().max(100).optional(),
+  ei_code: z
+    .string()
+    .regex(/^[A-Za-z0-9]{6,7}$/)
+    .optional()
+    .describe(
+      'Codice destinatario SDI: 7 caratteri (6 per la PA); "0000000" se si usa la PEC o per i privati.',
+    ),
+  e_invoice: z.boolean().optional().describe('Il cliente riceve fatture elettroniche.'),
+  default_payment_terms: z
+    .number()
+    .int()
+    .min(0)
+    .max(365)
+    .optional()
+    .describe('Giorni di pagamento predefiniti.'),
+  notes: z.string().max(2000).optional(),
+};
+
+function cleanEntity(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (v === undefined) continue;
+    out[k] = typeof v === 'string' ? cleanOutgoingText(v) : v;
+  }
+  return out;
+}
+
+export const createEntity = defineTool({
+  name: 'fic_create_entity',
+  title: 'Crea cliente o fornitore',
+  description: `Crea un cliente (default) o un fornitore in anagrafica. Serve almeno il nome. Fatture in Cloud rifiuta i duplicati (stesso codice, partita IVA o codice fiscale, o stesso nome se è l'unico dato).
+Prima di creare, cerca con fic_search_entities per evitare doppioni.
+Creates a client or supplier.`,
+  minMode: 'write',
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  input: z.object({
+    kind: kindSchema,
+    ...entityFields,
+    name: z.string().min(1).max(250).describe('Ragione sociale o nome completo.'),
+  }),
+  operations: ['createClient', 'createSupplier'],
+  handler: async ({ kind, ...data }, app) => {
+    const client = await app.api();
+    const p = PATHS[kind];
+    const res = await client.request<DataResponse<Entity>>({
+      operationId: p.createOp,
+      method: 'POST',
+      path: p.list,
+      body: { data: cleanEntity(data) },
+    });
+    app.log.audit('anagrafica creata', { kind, id: res?.data?.id });
+    return { kind, created: true, ...entityDetail(res?.data ?? {}) };
+  },
+});
+
+export const updateEntity = defineTool({
+  name: 'fic_update_entity',
+  title: 'Modifica cliente o fornitore',
+  description: `Modifica i campi indicati di un cliente o fornitore; i campi non indicati restano invariati. Restituisce i valori prima e dopo per i campi cambiati.
+Updates the given fields of a client or supplier.`,
+  minMode: 'write',
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  input: z.object({ kind: kindSchema, id: z.number().int().positive(), ...entityFields }),
+  operations: ['getClient', 'getSupplier', 'modifyClient', 'modifySupplier'],
+  handler: async ({ kind, id, ...data }, app) => {
+    const changes = cleanEntity(data);
+    if (Object.keys(changes).length === 0) throw refused('Nessun campo da modificare.');
+    const before = await getEntity(app, kind, id);
+    const client = await app.api();
+    const p = PATHS[kind];
+    const res = await client.request<DataResponse<Entity>>({
+      operationId: p.modifyOp,
+      method: 'PUT',
+      path: entityPath(kind),
+      pathParams: { [p.param]: id },
+      body: { data: changes },
+    });
+    app.cache.invalidate('entity:');
+    app.log.audit('anagrafica modificata', { kind, id, fields: Object.keys(changes) });
+    const after = res?.data ?? {};
+    const diff: Record<string, { before: unknown; after: unknown }> = {};
+    for (const k of Object.keys(changes)) {
+      diff[k] = {
+        before: (before as Record<string, unknown>)[k] ?? null,
+        after: (after as Record<string, unknown>)[k] ?? changes[k],
+      };
+    }
+    return { kind, id, updated: true, changes: diff };
+  },
+});

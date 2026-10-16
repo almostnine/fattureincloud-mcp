@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { type Config, loadConfig, type Mode } from '../../src/config.js';
 import { AppContext } from '../../src/context.js';
@@ -25,6 +28,7 @@ export function testApp(opts: { mode?: Mode; fic?: FakeFic; config?: Partial<Con
     fetch: fic.fetch,
     sleep: noSleep,
     now: () => opts.now ?? NOW,
+    cacheDir: mkdtempSync(join(tmpdir(), 'fic-test-cache-')),
     confirm: new ConfirmService({ secret: Buffer.alloc(32, 7), now: () => (opts.now ?? NOW).getTime() }),
   });
   return { app, fic };

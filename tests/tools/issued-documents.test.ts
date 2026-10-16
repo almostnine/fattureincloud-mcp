@@ -55,20 +55,18 @@ describe('fic_list_issued_documents', () => {
       next_due_date: null,
     });
     const overdue = invoice({ id: 2 });
-    const fic = new FakeFic()
-      .withCompany()
-      .on('GET', '/c/1001/issued_documents', (c) =>
-        c.query.page === '1'
-          ? { body: page([paid, overdue], 1, 2, 3) }
-          : {
-              body: page(
-                [invoice({ id: 3, payments_list: [payment({ amount: 602, due_date: '2026-12-01' })] })],
-                2,
-                2,
-                3,
-              ),
-            },
-      );
+    const fic = new FakeFic().withCompany().on('GET', '/c/1001/issued_documents', (c) =>
+      c.query.page === '1'
+        ? { body: page([paid, overdue], 1, 2, 3) }
+        : {
+            body: page(
+              [invoice({ id: 3, payments_list: [payment({ amount: 602, due_date: '2026-12-01' })] })],
+              2,
+              2,
+              3,
+            ),
+          },
+    );
     const { app } = testApp({ fic });
     const res = await call(await connect(app), 'fic_list_issued_documents', { payment_status: 'overdue' });
     expect(fic.callsTo('/c/1001/issued_documents')).toHaveLength(2);
