@@ -9,7 +9,9 @@
       "*.json",
       "!**/*.generated.ts",
       "!tests/contract/schemas.generated.json",
-      "!package-lock.json"
+      "!package-lock.json",
+      "!manifest.json",
+      "!server.json"
     ]
   },
   "formatter": {
