@@ -49,10 +49,13 @@ export class ConfirmService {
     const parts = token.trim().split('-');
     const again =
       'Chiama di nuovo il tool senza `confirm` per ottenere una nuova anteprima e un nuovo token, mostrala all’utente e attendi il suo sì.';
-    if (parts.length !== 4 || parts[0] !== action || parts[1] !== String(id)) {
+    // Formato: AZIONE-ID-ISTANTE-MAC; l'ID può contenere trattini, quindi si legge da destra.
+    const mac = parts.at(-1) ?? '';
+    const issued = parts.at(-2) ?? '';
+    const tokenId = parts.slice(1, -2).join('-');
+    if (parts.length < 4 || parts[0] !== action || tokenId !== String(id)) {
       throw refused(`Token di conferma non valido per questa azione su ${id}. ${again}`);
     }
-    const [, , issued, mac] = parts as [string, string, string, string];
     const issuedAt = Number.parseInt(issued, 36);
     if (
       !Number.isFinite(issuedAt) ||

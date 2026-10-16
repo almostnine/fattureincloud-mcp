@@ -4,6 +4,7 @@ export interface OpArgs {
   pathParams?: Record<string, string | number>;
   query?: Record<string, QueryValue>;
   body?: unknown;
+  form?: FormData;
   responseType?: 'json' | 'text';
   retrySafe?: boolean;
 }

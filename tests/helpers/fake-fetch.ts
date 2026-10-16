@@ -50,7 +50,12 @@ export class FakeFic {
       url,
       path: url.pathname,
       query: Object.fromEntries(url.searchParams.entries()),
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      body:
+        init?.body instanceof FormData
+          ? { form: [...init.body.keys()] }
+          : init?.body
+            ? JSON.parse(String(init.body))
+            : undefined,
       headers,
     };
     this.calls.push(call);

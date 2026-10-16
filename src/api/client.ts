@@ -24,6 +24,8 @@ export interface RequestSpec {
   pathParams?: Record<string, string | number>;
   query?: Record<string, QueryValue>;
   body?: unknown;
+  /** Corpo multipart (caricamento allegati): alternativo a `body`. */
+  form?: FormData;
   /** Se la richiesta si può ripetere su 5xx ed errori di rete. Default: vero per GET, PUT e DELETE. */
   retrySafe?: boolean;
   /** `text` per le risposte non JSON (per esempio l'XML della fattura elettronica). */
@@ -153,10 +155,10 @@ export class FicClient {
           headers: {
             Authorization: `Bearer ${this.token}`,
             Accept: spec.responseType === 'text' ? '*/*' : 'application/json',
-            ...(spec.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+            ...(spec.body !== undefined && !spec.form ? { 'Content-Type': 'application/json' } : {}),
             'User-Agent': 'fattureincloud-mcp-server',
           },
-          body: spec.body !== undefined ? JSON.stringify(spec.body) : undefined,
+          body: spec.form ?? (spec.body !== undefined ? JSON.stringify(spec.body) : undefined),
           signal: AbortSignal.timeout(TIMEOUT_MS),
           redirect: 'error',
         });
