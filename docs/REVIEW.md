@@ -65,10 +65,10 @@ Rischio residuo noto: il modello può chiamare l'anteprima e poi confermare da s
 
 | Verifica | Dove | Stato |
 |---|---|---|
-| I quattro esempi della definizione di finito ("fatture di ottobre 2026", "rate scadute e non pagate", "dettaglio della fattura 33/2026", "situazione dell'anno") | account reale, token in sola lettura, `npm run test:integration` con `FIC_IT_READONLY=1` | in attesa del token |
-| `fields=` restituisce `payments_list`, `ei_status`, `locked` negli elenchi; sintassi delle date in `q`; operatore `contains` | account reale, sola lettura | in attesa del token |
-| Host e redirect dei link ai PDF (oggi ammessi solo `*.fattureincloud.it`, senza redirect) | account reale, sola lettura | in attesa del token |
+| I quattro esempi della definizione di finito ("fatture di ottobre 2026", "rate scadute e non pagate", "dettaglio della fattura 33/2026", "situazione dell'anno") | account reale, token in sola lettura, `npm run test:integration` con `FIC_IT_READONLY=1` | superato il 17 ottobre 2026 (8 test, ogni richiesta non GET bloccata in rete) |
+| `fields=` restituisce `payments_list`, `ei_status`, `locked` negli elenchi; sintassi delle date in `q`; operatore `contains` | account reale, sola lettura | verificato: rate e stato SDI presenti negli elenchi, filtro per date funzionante |
+| Host e redirect dei link ai PDF (oggi ammessi solo `*.fattureincloud.it`, senza redirect) | account reale, sola lettura | verificato: host `compute.fattureincloud.it`, risposta diretta `application/pdf`, nessun redirect |
 | PUT parziale con la sola `payments_list`: le altre rate e il resto del documento restano invariati | account Trial | in attesa dell'account |
 | Creazione, duplicazione, conversione, cancellazione | account Trial | in attesa dell'account |
 | `sendEInvoice` con `dry_run` | solo piano a pagamento: non verificabile sul Trial; l'invio reale resta protetto da anteprima e conferma | aperto |
-| Installazione del `.mcpb` in Claude Desktop su macOS | Mac di Marco | da fare |
+| Installazione del `.mcpb` in Claude Desktop su macOS | Mac di Marco | fatta il 17 ottobre 2026: installazione e uso in sola lettura funzionanti |
