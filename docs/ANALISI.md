@@ -486,7 +486,7 @@ Fatti che determinano le scelte di DESIGN.md:
    - le release con il `.mcpb` allegato passano dall'API GitHub (`gh release`), non da git.
 2. **Magazzino e calendario** non hanno operazioni nell'API v2 (sezione 2.3): la copertura "senza eccezioni" si riferisce alle 123 operazioni esistenti.
 3. **Test di invio sull'account di prova**: l'invio SDI, anche in `dry_run`, non è disponibile sul piano Trial. Sull'account di prova si possono testare scritture ed email, ma non l'invio SDI reale. Per quello restano due strade: un piano a pagamento di prova o la sola verifica dell'anteprima.
-4. **Nome del pacchetto npm**: `fattureincloud-mcp` è già occupato. Proposta: `@almostnine/fattureincloud-mcp`, che richiede un account o un'organizzazione npm `almostnine`.
+4. **Nome del pacchetto npm**: `fattureincloud-mcp` è già occupato. Deciso: `fattureincloud-mcp-server`.
 5. **Marchio**: "Fatture in Cloud" è di TeamSystem. Nome visualizzato "Fatture in Cloud MCP (non ufficiale)" con avviso di non affiliazione.
 6. **Dati dell'attività**: per rispettare la regola sul repository pubblico, la documentazione descrive il caso d'uso in modo generico (piccola attività con fatture a rate, bonifici, solleciti, riconciliazione bancaria), senza nomi né banca.
 7. **Installazione reale in Claude Desktop** (Fase 6, punto 4): va fatta da te, con il doppio clic sul `.mcpb`. Io preparo i passi e verifico i log.

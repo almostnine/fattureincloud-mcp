@@ -12,7 +12,7 @@ Stato: bozza per il punto di controllo 1 (16 ottobre 2026).
 |---|---|---|
 | Installazione con un clic in Claude Desktop su macOS | Claude Desktop include Node.js: "Included with Claude Desktop on macOS and Windows, so users need no separate runtime" (https://claude.com/docs/connectors/building/mcpb.md) | Python non è incluso; con `server.type: "python"` si usa il Python di sistema dell'utente |
 | Nessun problema di versione del runtime | un solo file JavaScript senza moduli nativi gira su qualsiasi Node da 20 in su | le dipendenze compilate (pydantic, richiesto dall'SDK MCP) non si possono impacchettare in modo portabile: "Cannot portably bundle compiled dependencies (e.g., pydantic, which the MCP Python SDK requires)" (https://github.com/modelcontextprotocol/mcpb/blob/main/README.md). È esattamente il guasto del progetto di riferimento |
-| Riga di comando su Linux | `npx -y @almostnine/fattureincloud-mcp@<versione>` con Node 20+ | `uvx`, comodo |
+| Riga di comando su Linux | `npx -y fattureincloud-mcp-server@<versione>` con Node 20+ | `uvx`, comodo |
 | Raccomandazione di Anthropic | "Node.js is strongly recommended" (https://claude.com/docs/connectors/building/mcpb.md); "We recommend implementing MCP servers in Node.js rather than Python to reduce installation friction" (README MCPB) | il tipo `uv` (manifest 0.4) esiste ma ha un solo esempio ufficiale, richiede rete alla prima installazione e la CLI `mcpb init` non lo propone |
 | SDK FIC ufficiale | esiste (`@fattureincloud/fattureincloud-ts-sdk` 2.1.3), ma non lo usiamo (vedi sotto) | esiste (`fattureincloud-python-sdk` 2.1.5) |
 
@@ -21,12 +21,12 @@ Python sarebbe stato più comodo solo per l'SDK FIC. Ma l'SDK è generato dall'O
 ### 1.2 Dipendenze
 
 Runtime (solo due):
-- `@modelcontextprotocol/server` (SDK TypeScript v2, linea stabile, implementa la spec MCP 2026-07-28; `serveStdio` serve sia i client che parlano la spec precedente sia quelli nuovi). Richiede Node 20+ e Zod v4. Fonte: https://github.com/modelcontextprotocol/typescript-sdk (README).
+- `@modelcontextprotocol/server` 2.2.0 (SDK TypeScript v2, linea stabile, implementa la spec MCP 2026-07-28; `serveStdio` serve sia i client che parlano la spec precedente sia quelli nuovi). Richiede Node 20+ e Zod v4. Fonte: https://github.com/modelcontextprotocol/typescript-sdk (README).
 - `zod` v4 per gli schemi di input e output.
 
-Niente SDK FIC a runtime: dipende da `axios` e `form-data`, è generato in modo generico e non ci dà controllo su retry, 403 di quota, paginazione ed errori. Al suo posto un client `fetch` nativo di circa 300 righe, tipizzato con i tipi generati dall'OpenAPI ufficiale (`openapi-typescript`, solo in sviluppo).
+Niente SDK FIC a runtime: dipende da `axios` e `form-data`, è generato in modo generico e non ci dà controllo su retry, 403 di quota, paginazione ed errori. Al suo posto un client `fetch` nativo di circa 300 righe. I tipi dei dati usati dai tool (documenti, rate, anagrafiche) sono scritti a mano sul sottoinsieme che serve; le fixture dei test sono validate contro gli schemi dell'OpenAPI, così i tipi non possono allontanarsi dalla realtà senza che un test se ne accorga. (`openapi-typescript` è stato scartato: richiede TypeScript 5 come peer.)
 
-Sviluppo: `typescript`, `esbuild`, `vitest`, `@biomejs/biome` (lint e formattazione in un solo strumento), `openapi-typescript`, `ajv` (per validare le fixture contro gli schemi dell'OpenAPI), `@anthropic-ai/mcpb` (CLI di pacchettizzazione), `@modelcontextprotocol/inspector` (solo per le prove, richiede Node 22.19+).
+Sviluppo: `typescript` 7, `esbuild`, `vitest`, `@biomejs/biome` (lint e formattazione in un solo strumento), `@modelcontextprotocol/client` (per i test), `yaml` e `tsx` (generazione del catalogo), `ajv` (per validare le fixture contro gli schemi dell'OpenAPI), `@anthropic-ai/mcpb` (CLI di pacchettizzazione), `@modelcontextprotocol/inspector` (solo per le prove, richiede Node 22.19+).
 
 Regole:
 - versioni **esatte** in `package.json` e `package-lock.json` versionato; installazione con `npm ci`;
@@ -49,7 +49,7 @@ Un solo artefatto, `dist/index.js` (bundle esbuild, target `node20`, formato ESM
      - `fic_default_payment_account_id` (number, facoltativo).
    - `privacy_policies`: la privacy policy del progetto (sezione nel README) e quella di Fatture in Cloud.
    - Firma del `.mcpb` con `mcpb sign`: facoltativa, da decidere al rilascio.
-2. **Pacchetto npm `@almostnine/fattureincloud-mcp`** con `bin: fattureincloud-mcp`, per Linux e per configurazioni manuali. Il nome senza scope `fattureincloud-mcp` su npm è già occupato da un altro progetto.
+2. **Pacchetto npm `fattureincloud-mcp-server`** con `bin: fattureincloud-mcp-server`, per Linux e per configurazioni manuali (il nome `fattureincloud-mcp` su npm è già occupato da un altro progetto).
 
 La directory dei connettori di Anthropic non accetta più MCPB ("the directory no longer accepts MCPB submissions", https://claude.com/docs/connectors/building/mcpb.md): il `.mcpb` si distribuisce dalle release GitHub. Il registro MCP accetta sia il pacchetto npm sia il `.mcpb` da GitHub Releases (`registryType: "mcpb"` con `fileSha256`), quindi un solo `server.json` può elencarli entrambi (https://modelcontextprotocol.io/registry/package-types.md).
 
@@ -92,7 +92,6 @@ src/
     errors.ts              errori tipizzati e messaggi per il modello (cosa è successo, cosa fare)
     catalog.generated.ts   catalogo di tutte le operazioni OpenAPI (generato, versionato nel repo)
     scopes.ts              scope richiesto per operazione (dichiarato nella spec o verificato a mano)
-    types.generated.ts     tipi TypeScript generati dall'OpenAPI ufficiale
   domain/
     documents.ts           proiezioni compatte dei documenti, ricerca per numero
     installments.ts        rate: stato, scadute, segna pagata o non pagata
@@ -113,7 +112,8 @@ src/
     received-documents.ts, cashbook.ts, reference-data.ts, einvoice.ts, files.ts,
     reconcile.ts, send.ts, delete.ts, generic.ts, cache.ts
 scripts/
-  gen-catalog.ts           OpenAPI -> catalog.generated.ts + types.generated.ts + docs/COVERAGE.md
+  gen-catalog.ts           OpenAPI -> catalog.generated.ts + schemi delle risposte per i test di contratto
+  gen-coverage.ts          catalogo + tool -> docs/COVERAGE.md
   build-mcpb.sh            bundle, manifest, pack, verifica
 tests/
   unit/, tools/, contract/, fixtures/ (JSON inventati), integration/ (disattivati di default)
@@ -143,8 +143,9 @@ tests/
 Lo script `gen-catalog.ts` legge l'OpenAPI ufficiale (versione bloccata, oggi 2.1.8) e genera:
 
 - `catalog.generated.ts`: per ognuna delle 123 operazioni metodo, percorso, parametri (con enum e obbligatorietà), schema del corpo, scope, **classe di effetto** (lettura, scrittura, cancellazione, cancellazione definitiva, invio, scrittura verso terzi);
-- `types.generated.ts`: i tipi delle richieste e delle risposte;
-- `docs/COVERAGE.md`: la tabella operazione, tool che la espone, test sì o no.
+- `tests/contract/schemas.generated.json`: gli schemi delle risposte, per validare le fixture.
+
+`docs/COVERAGE.md` (operazione, tool che la espone, test sì o no) è generato da un secondo script che incrocia catalogo e tool.
 
 La classe di effetto non coincide con il metodo HTTP: le quattro operazioni `.../totals` sono POST ma calcolano soltanto; `transform` e `join` sono GET e restituiscono una bozza senza crearla. La classificazione è nel catalogo, rivista a mano e coperta da test. Gli scope della spec sono incompleti: dove mancano, `scopes.ts` riporta lo scope dedotto e lo segna come tale.
 

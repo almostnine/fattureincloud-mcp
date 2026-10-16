@@ -1,0 +1,61 @@
+{
+  "name": "fattureincloud-mcp-server",
+  "version": "0.1.0",
+  "description": "Server MCP per Fatture in Cloud: copertura completa dell'API v2, sola lettura di default, sicurezza a più livelli",
+  "license": "MIT",
+  "author": "Marco Di Santo (https://github.com/almostnine)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/almostnine/fattureincloud-mcp.git"
+  },
+  "homepage": "https://github.com/almostnine/fattureincloud-mcp#readme",
+  "bugs": "https://github.com/almostnine/fattureincloud-mcp/issues",
+  "keywords": [
+    "mcp",
+    "fatture-in-cloud",
+    "fatturazione-elettronica",
+    "claude",
+    "model-context-protocol"
+  ],
+  "mcpName": "io.github.almostnine/fattureincloud-mcp",
+  "type": "module",
+  "bin": {
+    "fattureincloud-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist/index.js",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "gen": "tsx scripts/gen-catalog.ts",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "pack:mcpb": "bash scripts/build-mcpb.sh"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.2.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@modelcontextprotocol/client": "2.2.0",
+    "@types/node": "25.9.9",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3",
+    "yaml": "2.9.1"
+  }
+}
