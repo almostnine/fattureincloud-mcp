@@ -1,6 +1,6 @@
 # Revisione finale
 
-Stato al 17 ottobre 2026, versione 1.0.0 (non ancora rilasciata).
+Stato al 17 ottobre 2026, versione 1.0.0.
 
 ## 1. Verifiche automatiche
 
