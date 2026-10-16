@@ -121,7 +121,10 @@ function describe(data: Record<string, unknown>): Record<string, unknown> {
   return {
     id: data.id,
     type: data.type,
-    number: data.number !== undefined ? `${data.number}${data.numeration ?? ''}` : undefined,
+    number:
+      data.number !== undefined && data.number !== null
+        ? `${data.number}${data.numeration ?? ''}`
+        : undefined,
     date: data.date,
     name: untrusted((data.name as string) ?? entity?.name, 200),
     description: untrusted(data.description, 300),

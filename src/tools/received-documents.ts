@@ -11,6 +11,7 @@ import {
   type ReceivedDocument,
 } from '../domain/types.js';
 import { untrusted } from '../safety/untrusted.js';
+import { wrapFreeText } from '../safety/wrap.js';
 import { pagingShape, periodShape, resolvePeriod } from './common.js';
 import { defineTool } from './define.js';
 
@@ -35,6 +36,43 @@ function receivedSummary(d: ReceivedDocument, today: string) {
     payment_status: pay?.payment_status,
     next_due_date: d.next_due_date,
     e_invoice: d.e_invoice || undefined,
+  };
+}
+
+/** Documento in attesa di registrazione: schema diverso dai documenti ricevuti (PendingReceivedDocument). */
+interface PendingDocument {
+  id?: number | null;
+  date?: string | null;
+  emssion_date?: string | null;
+  type?: string | null;
+  document_type?: string | null;
+  supplier_name?: string | null;
+  subject?: string | null;
+  category?: string | null;
+  amount_net?: number | null;
+  amount_vat?: number | null;
+  amount_gross?: number | null;
+  currency?: { id?: string | null } | null;
+  import_error?: string | null;
+  payments_list?: Array<{ amount?: number | null; due_date?: string | null }> | null;
+}
+
+function pendingSummary(d: PendingDocument) {
+  return {
+    id: d.id,
+    source: d.type,
+    document_type: d.document_type,
+    date: d.date,
+    issue_date: d.emssion_date,
+    supplier: untrusted(d.supplier_name, 200),
+    subject: untrusted(d.subject, 300),
+    category: untrusted(d.category, 100),
+    amount_net: d.amount_net,
+    amount_vat: d.amount_vat,
+    amount_gross: d.amount_gross,
+    currency: d.currency?.id && d.currency.id !== 'EUR' ? d.currency.id : undefined,
+    import_error: untrusted(d.import_error, 300),
+    installments: d.payments_list?.map((p) => ({ amount: p.amount, due_date: p.due_date })),
   };
 }
 
@@ -75,9 +113,15 @@ Lists expenses and received documents, or (pending: true) received e-invoices no
     q.textContains('entity.name', args.supplier_name).textContains('description', args.description);
 
     if (args.pending) {
-      const items: ReceivedDocument[] = [];
+      if (args.supplier_id || args.supplier_name || args.description || period.from || period.to) {
+        throw refused(
+          'Con pending: true i filtri per periodo, fornitore e descrizione non sono disponibili: ripeti senza filtri.',
+        );
+      }
+      const items: PendingDocument[] = [];
+      let truncated = false;
       for (const type of PENDING_TYPES) {
-        const all = await fetchAll<ReceivedDocument>(
+        const all = await fetchAll<PendingDocument>(
           client,
           {
             operationId: 'listPendingReceivedDocuments',
@@ -87,8 +131,14 @@ Lists expenses and received documents, or (pending: true) received e-invoices no
           app.config.maxPages,
         );
         items.push(...all.items);
+        truncated ||= all.truncated;
       }
-      return { pending: true, count: items.length, items: items.map((d) => receivedSummary(d, today)) };
+      return {
+        pending: true,
+        count: items.length,
+        items: items.map(pendingSummary),
+        truncated: truncated ? 'Elenco parziale: aumenta FIC_MAX_PAGES.' : undefined,
+      };
     }
 
     const spec = {
@@ -133,22 +183,23 @@ Shows a received document or a pending received document.`,
   handler: async (args, app) => {
     const client = await app.api();
     const today = todayRome(app.now());
-    const res = await client.request<DataResponse<ReceivedDocument>>(
-      args.pending
-        ? {
-            operationId: 'getPendingReceivedDocument',
-            method: 'GET',
-            path: '/c/{company_id}/received_documents/pending/{document_id}',
-            pathParams: { document_id: args.document_id },
-          }
-        : {
-            operationId: 'getReceivedDocument',
-            method: 'GET',
-            path: '/c/{company_id}/received_documents/{document_id}',
-            pathParams: { document_id: args.document_id },
-            query: { fieldset: 'detailed' },
-          },
-    );
+    if (args.pending) {
+      const p = await client.request<DataResponse<PendingDocument>>({
+        operationId: 'getPendingReceivedDocument',
+        method: 'GET',
+        path: '/c/{company_id}/received_documents/pending/{document_id}',
+        pathParams: { document_id: args.document_id },
+      });
+      if (!p?.data) throw refused(`Documento in attesa ${args.document_id} non trovato.`);
+      return { pending: true, ...pendingSummary(p.data) };
+    }
+    const res = await client.request<DataResponse<ReceivedDocument>>({
+      operationId: 'getReceivedDocument',
+      method: 'GET',
+      path: '/c/{company_id}/received_documents/{document_id}',
+      pathParams: { document_id: args.document_id },
+      query: { fieldset: 'detailed' },
+    });
     const d = res?.data;
     if (!d) throw refused(`Documento ricevuto ${args.document_id} non trovato.`);
     return {
@@ -199,7 +250,7 @@ Lists cashbook entries in a date range, optionally by payment account.`,
         pathParams: { document_id: args.entry_id },
       });
       const e = res?.data ?? {};
-      return { ...e, description: untrusted(e.description), entity_name: untrusted(e.entity_name, 200) };
+      return wrapFreeText(e) as Record<string, unknown>;
     }
     const today = todayRome(app.now());
     const from = args.date_from ?? `${today.slice(0, 7)}-01`;

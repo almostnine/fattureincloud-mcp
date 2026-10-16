@@ -61,11 +61,16 @@ export interface PaymentSummary {
   overdue_installments: number;
 }
 
+/** Rata ancora da incassare: né pagata né stornata. Unica definizione usata in tutto il server. */
+export function isOpen(p: PaymentItem): boolean {
+  return p.status !== 'paid' && p.status !== 'reversed';
+}
+
 /** Stato di pagamento derivato dalle rate. Le rate stornate (`reversed`) non contano né come pagate né come dovute. */
 export function paymentSummary(payments: PaymentItem[] | null | undefined, today: string): PaymentSummary {
   const list = (payments ?? []).filter((p) => p.status !== 'reversed');
   const paid = list.filter((p) => p.status === 'paid');
-  const open = list.filter((p) => p.status !== 'paid');
+  const open = list.filter(isOpen);
   const overdue = open.filter((p) => p.due_date && p.due_date < today);
   let status: PaymentSummary['payment_status'] = 'no_installments';
   if (list.length) status = open.length === 0 ? 'paid' : paid.length === 0 ? 'not_paid' : 'partially_paid';
@@ -80,7 +85,7 @@ export function paymentSummary(payments: PaymentItem[] | null | undefined, today
 }
 
 export function installmentView(p: PaymentItem, index: number, today: string) {
-  const overdue = p.status !== 'paid' && p.status !== 'reversed' && Boolean(p.due_date && p.due_date < today);
+  const overdue = isOpen(p) && Boolean(p.due_date && p.due_date < today);
   return {
     index,
     id: p.id ?? undefined,

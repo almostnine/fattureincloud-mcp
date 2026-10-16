@@ -41,7 +41,8 @@ export function compact<T>(value: T): T {
     for (const [k, v] of Object.entries(value)) {
       const c = compact(v);
       if (c === undefined || c === null || c === '') continue;
-      if (Array.isArray(c) && c.length === 0) continue;
+      // Gli elenchi vuoti restano solo dove dicono qualcosa: "nessun risultato".
+      if (Array.isArray(c) && c.length === 0 && k !== 'items' && k !== 'results') continue;
       if (typeof c === 'object' && !Array.isArray(c) && Object.keys(c as object).length === 0) continue;
       out[k] = c;
     }
@@ -63,6 +64,20 @@ export function errorResult(err: unknown, docType?: string): CallToolResult {
   return { content: [{ type: 'text', text: errorToText(err, docType) }], isError: true };
 }
 
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+
+/** Raccoglie gli indirizzi email presenti negli argomenti dei tool di scrittura (vedi AppContext.sessionEmails). */
+function rememberEmails(value: unknown, into: Set<string>, depth = 0): void {
+  if (depth > 10) return;
+  if (typeof value === 'string') {
+    for (const m of value.match(EMAIL) ?? []) into.add(m.toLowerCase());
+  } else if (Array.isArray(value)) {
+    for (const v of value) rememberEmails(v, into, depth + 1);
+  } else if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) rememberEmails(v, into, depth + 1);
+  }
+}
+
 /** Esegue l'handler con il doppio controllo di modalità e la traduzione degli errori. */
 export async function runTool<I extends z.ZodObject>(
   def: ToolDef<I>,
@@ -78,6 +93,7 @@ export async function runTool<I extends z.ZodObject>(
         `Il tool ${def.name} richiede la modalità ${def.minMode}; il server è in modalità ${app.config.mode}.`,
       );
     }
+    if (def.minMode === 'write') rememberEmails(args, app.sessionEmails);
     const data = await def.handler(args, app);
     return toResult(data);
   } catch (err) {

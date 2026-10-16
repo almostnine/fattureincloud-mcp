@@ -184,9 +184,9 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
     body: z
       .string()
       .min(1)
-      .max(20_000)
+      .max(5000)
       .optional()
-      .describe('Testo semplice; default il testo proposto da Fatture in Cloud.'),
+      .describe('Testo semplice (massimo 5.000 caratteri); default il testo proposto da Fatture in Cloud.'),
     sender_email: z
       .string()
       .email()
@@ -219,6 +219,13 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
         `Destinatari non ammessi: ${notAllowed.join(', ')}. Si può inviare solo agli indirizzi del cliente (${[...allowed].join(', ') || 'nessuno'}) o a quelli configurati in FIC_EMAIL_ALLOWED_RECIPIENTS. Se l’indirizzo è giusto, aggiornalo prima nell’anagrafica del cliente.`,
       );
     }
+    const configured = new Set(app.config.emailAllowedRecipients);
+    const changedNow = recipients.filter((r) => app.sessionEmails.has(r) && !configured.has(r));
+    if (changedNow.length) {
+      throw refused(
+        `Destinatari non ammessi: ${changedNow.join(', ')} è stato scritto in Fatture in Cloud durante questa sessione. Per sicurezza non si invia a un indirizzo appena inserito o modificato: verifica l’indirizzo con l’utente e riprova in una nuova sessione, oppure aggiungilo a FIC_EMAIL_ALLOWED_RECIPIENTS.`,
+      );
+    }
     const senders = (data.sender_emails_list ?? []).filter((s) => s.email);
     let sender: { id?: number; email?: string };
     if (args.sender_email) {
@@ -236,11 +243,14 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
     } else {
       sender = { id: 0, email: 'no-reply di Fatture in Cloud' };
     }
-    const subject = cleanOutgoingText(
-      args.subject ?? data.subject ?? `Documento ${displayNumber(doc) ?? ''}`,
-    );
+    // Oggetto su una sola riga: niente a capo che possano alterare le intestazioni.
+    const subject = cleanOutgoingText(args.subject ?? data.subject ?? `Documento ${displayNumber(doc) ?? ''}`)
+      .replace(/[\r\n]+/g, ' ')
+      .slice(0, 300);
     const body = args.body !== undefined ? escapeHtml(cleanOutgoingText(args.body)) : (data.body ?? '');
     if (!body) throw refused('Testo dell’email vuoto: indica body.');
+    if (Buffer.byteLength(body, 'utf8') > 50 * 1024)
+      throw refused('Il testo dell’email supera 50 KiB, il limite di Fatture in Cloud: accorcialo.');
     const payload = {
       ...(sender.id !== undefined ? { sender_id: sender.id } : { sender_email: sender.email }),
       recipient_email: recipients.join(','),
@@ -271,7 +281,8 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
         to: recipients,
         cc: args.send_copy ? (data.cc_email ?? undefined) : undefined,
         subject: untrusted(subject, 300),
-        body: untrusted(body.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''), 3000),
+        // L'anteprima mostra il testo per intero: l'utente approva esattamente quello che parte.
+        body: untrusted(body.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''), 60_000),
         attach_pdf: args.attach_pdf,
         confirm_token: app.confirm.issue('EMAIL', args.document_id, state, payload),
         instructions:

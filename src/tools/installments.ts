@@ -33,7 +33,12 @@ Lists installments across all documents: overdue, unpaid or paid, optionally gro
     due_to: isoDate.optional().describe('Scadenza della rata fino a (inclusa).'),
     paid_from: isoDate.optional().describe('Data di pagamento da (solo rate pagate).'),
     paid_to: isoDate.optional().describe('Data di pagamento fino a (solo rate pagate).'),
-    ...periodShape,
+    year: periodShape.year.describe('Anno della DATA DEL DOCUMENTO (non della scadenza né del pagamento).'),
+    month: periodShape.month.describe('Mese 1-12 della data del documento.'),
+    date_from: periodShape.date_from.describe(
+      'Data del documento da (inclusa). Per le scadenze usa due_from.',
+    ),
+    date_to: periodShape.date_to.describe('Data del documento fino a (inclusa). Per le scadenze usa due_to.'),
     client_id: z.number().int().positive().optional(),
     client_name: z.string().min(2).max(100).optional(),
     type: docTypeSchema.default('invoice'),
@@ -48,14 +53,17 @@ Lists installments across all documents: overdue, unpaid or paid, optionally gro
     const q = new Q();
     if (args.client_id) q.eq('entity.id', args.client_id);
     q.textContains('entity.name', args.client_name);
-    // Per le rate aperte basta next_due_date (scadenza della prossima rata non pagata): non serve leggere l'archivio intero.
+    let defaultPeriodNote: string | undefined;
     let period = resolvePeriod(args, app.now());
-    if (args.status === 'overdue') q.dateLt('next_due_date', today);
-    else if (args.status === 'not_paid') q.raw('next_due_date is not null');
+    // Documenti con almeno una rata aperta; le scadute si individuano in locale, rata per rata.
+    if (args.status === 'overdue' || args.status === 'not_paid') q.raw('next_due_date is not null');
     else if (!period.from && !period.to) {
       // Le rate pagate non sono filtrabili lato server: si limita il periodo dei documenti.
       const fromPaid = args.paid_from ? `${Number(args.paid_from.slice(0, 4)) - 1}-01-01` : undefined;
       period = fromPaid ? { from: fromPaid, to: args.paid_to } : resolvePeriod({}, app.now(), true);
+      defaultPeriodNote = `Le rate pagate si cercano solo tra i documenti emessi dal ${period.from}${
+        period.to ? ` al ${period.to}` : ''
+      }: per documenti più vecchi indica year o date_from.`;
     }
     q.dateGte('date', period.from).dateLte('date', period.to);
 
@@ -93,6 +101,10 @@ Lists installments across all documents: overdue, unpaid or paid, optionally gro
           : undefined,
       by_client: args.group_by_client ? groupByClient(rows) : undefined,
       documents_read: all.items.length,
+      notes: [
+        ...(defaultPeriodNote ? [defaultPeriodNote] : []),
+        'Le note di credito non vengono abbinate alle rate: una fattura stornata in parte resta da incassare per intero. Controlla le note di credito del cliente prima di un sollecito.',
+      ],
       truncated: all.truncated
         ? `Letti solo ${all.items.length} documenti su ${all.total}: restringi il periodo o aumenta FIC_MAX_PAGES.`
         : undefined,
@@ -199,7 +211,11 @@ Marks one installment as paid (with payment account and date) or unpaid.`,
       status: p.status ?? 'not_paid',
       paid_date: p.status === 'paid' ? p.paid_date : null,
       payment_account: p.status === 'paid' && p.payment_account?.id ? { id: p.payment_account.id } : null,
-      ...(p.payment_terms ? { payment_terms: p.payment_terms } : {}),
+      ...(p.payment_terms?.days !== null && p.payment_terms?.days !== undefined
+        ? { payment_terms: { days: p.payment_terms.days, type: p.payment_terms.type ?? 'standard' } }
+        : {}),
+      // Dati FatturaPA del pagamento: si conservano.
+      ...(p.ei_raw ? { ei_raw: p.ei_raw } : {}),
     }));
     const client = await app.api();
     const res = await client.request<DataResponse<IssuedDocument>>({

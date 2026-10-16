@@ -41,8 +41,16 @@ const itemSchema = z.object({
   name: z.string().min(1).max(500).describe('Nome della riga.'),
   description: z.string().max(2000).optional(),
   qty: z.number().positive().default(1),
-  net_price: z.number().optional().describe('Prezzo unitario netto (default).'),
-  gross_price: z.number().optional().describe('Prezzo unitario lordo, solo con use_gross_prices.'),
+  net_price: z
+    .number()
+    .optional()
+    .describe(
+      'Prezzo unitario al netto dell’IVA: FIC aggiunge l’IVA dell’aliquota. Usa questo salvo indicazione contraria.',
+    ),
+  gross_price: z
+    .number()
+    .optional()
+    .describe('Prezzo unitario IVA inclusa (FIC scorpora l’IVA). Solo se l’utente dà prezzi lordi.'),
   vat_id: z
     .number()
     .int()
@@ -101,7 +109,11 @@ function buildItems(
     if (vat === undefined)
       throw refused(`Riga ${i + 1}: indica vat_id (aliquote con fic_reference_data, list "vat_types").`);
     if (gross ? it.gross_price === undefined : it.net_price === undefined) {
-      throw refused(`Riga ${i + 1}: manca ${gross ? 'gross_price' : 'net_price'}.`);
+      throw refused(
+        gross
+          ? `Riga ${i + 1}: il documento usa prezzi IVA inclusa, quindi serve gross_price. Non copiare un prezzo netto in gross_price: se il prezzo che hai è al netto dell’IVA, ripeti con use_gross_prices: false e net_price.`
+          : `Riga ${i + 1}: manca net_price (prezzo al netto dell’IVA).`,
+      );
     }
     return {
       ...(it.product_id ? { product_id: it.product_id } : {}),
@@ -190,7 +202,10 @@ Creates an issued document; use dry_run to preview totals and installments first
       .max(365)
       .optional()
       .describe('Giorni tra una rata e l’altra; default i termini del cliente o 30.'),
-    end_of_month: z.boolean().default(false).describe('Scadenze a fine mese.'),
+    end_of_month: z
+      .boolean()
+      .optional()
+      .describe('Scadenze a fine mese; default i termini del cliente in anagrafica.'),
     e_invoice: z.boolean().optional().describe('Fattura elettronica; default l’impostazione del cliente.'),
     ei_payment_method: z
       .string()
@@ -226,7 +241,9 @@ Creates an issued document; use dry_run to preview totals and installments first
     const entity: Entity = await getEntity(app, 'client', args.client_id);
     const info = await preCreateInfo(app, args.type);
     const date = args.date ?? todayRome(app.now());
-    const gross = args.use_gross_prices ?? Boolean(info.default_values?.use_gross_prices);
+    // Se l'utente dà solo prezzi netti, si lavora al netto anche quando il default dell'azienda è il lordo.
+    const onlyNet = args.items.every((it) => it.net_price !== undefined && it.gross_price === undefined);
+    const gross = args.use_gross_prices ?? (onlyNet ? false : Boolean(info.default_values?.use_gross_prices));
     const defaultVat = entity.default_vat?.id ?? info.items_default_values?.vat?.id ?? undefined;
     const eInvoice =
       args.e_invoice ?? (['invoice', 'credit_note'].includes(args.type) ? Boolean(entity.e_invoice) : false);
@@ -269,10 +286,11 @@ Creates an issued document; use dry_run to preview totals and installments first
     }
 
     const t = await totals(app, doc);
-    if (hasPayments(args.type) && t.amount_due !== undefined) {
+    if (hasPayments(args.type) && t.amount_due !== undefined && t.amount_due !== null) {
+      const endOfMonth = args.end_of_month ?? entity.default_payment_terms_type === 'end_of_month';
       const terms = {
         days: args.payment_terms_days ?? entity.default_payment_terms ?? 30,
-        type: args.end_of_month ? 'end_of_month' : 'standard',
+        type: endOfMonth ? 'end_of_month' : 'standard',
       } as const;
       doc.payments_list = args.installments?.length
         ? explicitInstallments(t.amount_due, args.installments)
@@ -394,7 +412,7 @@ Updates an issued document, preserving installment status.`,
         { ...doc, ...data, payments_list: undefined } as IssuedDocument,
         args.document_id,
       );
-      if (t.amount_due !== undefined && hasPayments(doc.type ?? 'invoice')) {
+      if (t.amount_due !== undefined && t.amount_due !== null && hasPayments(doc.type ?? 'invoice')) {
         data.payments_list = args.installments?.length
           ? explicitInstallments(t.amount_due, args.installments)
           : shiftedInstallments(doc, args.date ?? doc.date ?? todayRome(app.now()), t.amount_due);
@@ -428,7 +446,7 @@ export const convertIssuedDocument = defineTool({
   name: 'fic_convert_issued_document',
   title: 'Converti documento (es. proforma in fattura)',
   description: `Converte un documento in un altro tipo con la funzione ufficiale di Fatture in Cloud, che mantiene il collegamento tra i due: proforma in fattura o ricevuta; preventivo o rapportino in ordine, proforma, ricevuta o fattura; ordine in proforma, ricevuta o fattura.
-Con keep_copy: false l'originale viene eliminato da Fatture in Cloud: chiedi conferma all'utente. Default: l'originale resta.
+Default: l'originale resta. Con keep_copy: false Fatture in Cloud elimina l'originale: in quel caso la prima chiamata restituisce un'anteprima e un token, e la conversione avviene solo richiamando con confirm dopo il sì esplicito dell'utente.
 Converts a document (e.g. proforma to invoice) keeping the link between documents.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -443,6 +461,11 @@ Converts a document (e.g. proforma to invoice) keeping the link between document
     date: isoDate
       .optional()
       .describe('Data del nuovo documento; default quella proposta da Fatture in Cloud.'),
+    confirm: z
+      .string()
+      .max(80)
+      .optional()
+      .describe('Solo con keep_copy: false. Token dell’anteprima, dopo il sì esplicito dell’utente.'),
   }),
   operations: ['getIssuedDocument', 'transformIssuedDocument', 'createIssuedDocument'],
   docTypeOf: (a) => a.new_type,
@@ -453,6 +476,29 @@ Converts a document (e.g. proforma to invoice) keeping the link between document
       throw refused(
         `Un documento di tipo ${src.type} non si può convertire in ${args.new_type}. Conversioni ammesse: ${allowed.join(', ') || 'nessuna'}.`,
       );
+    }
+    if (!args.keep_copy) {
+      // Eliminare l'originale è irreversibile: stessa protezione delle cancellazioni.
+      const state = String(src.updated_at ?? '');
+      const params = {
+        new_type: args.new_type,
+        keep_copy: false,
+        e_invoice: args.e_invoice ?? null,
+        date: args.date ?? null,
+      };
+      if (!args.confirm) {
+        return {
+          preview: true,
+          converted: false,
+          from: { id: src.id, type: src.type, number: displayNumber(src), date: src.date },
+          new_type: args.new_type,
+          warning: 'Il documento originale verrà eliminato da Fatture in Cloud dopo la conversione.',
+          confirm_token: app.confirm.issue('DEL', args.document_id, state, params),
+          instructions:
+            'Mostra l’anteprima all’utente; solo dopo il suo sì esplicito richiama con gli stessi parametri e confirm.',
+        };
+      }
+      app.confirm.verify(args.confirm, 'DEL', args.document_id, state, params);
     }
     const eInvoice =
       args.e_invoice ??
@@ -504,7 +550,8 @@ Duplicates an issued document with a new date, optional text replacements and re
   handler: async (args, app) => {
     const src = await getIssued(app, args.document_id);
     const date = args.date ?? todayRome(app.now());
-    let entity: Entity = src.entity ?? {};
+    if (!src.entity) throw refused('Il documento originale non ha un cliente: non si può duplicare.');
+    let entity: Entity = src.entity;
     let entityNote: string | undefined;
     if (src.entity?.id) {
       try {
@@ -520,7 +567,7 @@ Duplicates an issued document with a new date, optional text replacements and re
       keepNumeration: args.keep_numeration,
     });
     const t = await totals(app, body);
-    if (hasPayments(src.type ?? 'invoice') && t.amount_due !== undefined)
+    if (hasPayments(src.type ?? 'invoice') && t.amount_due !== undefined && t.amount_due !== null)
       body.payments_list = shiftedInstallments(src, date, t.amount_due);
     const preview = {
       source: { id: src.id, number: displayNumber(src), date: src.date },

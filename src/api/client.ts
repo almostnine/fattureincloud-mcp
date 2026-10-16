@@ -76,6 +76,8 @@ export function buildUrl(
     const v = pathParams[name];
     if (v === undefined || v === '')
       throw new FicError('refused', `Parametro di percorso mancante: ${name}.`);
+    // "." e ".." cambierebbero l'endpoint chiamato.
+    if (/^\.{1,2}$/.test(String(v))) throw new FicError('refused', `Valore non valido per ${name}.`);
     return encodeURIComponent(String(v));
   });
   const url = new URL(API_BASE + filled);

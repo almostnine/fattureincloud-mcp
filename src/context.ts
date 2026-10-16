@@ -26,6 +26,12 @@ export class AppContext {
   readonly now: () => Date;
   /** fetch per i file dei documenti (link temporanei); iniettabile nei test. */
   readonly httpFetch: typeof fetch;
+  /**
+   * Indirizzi email scritti in Fatture in Cloud durante questa sessione (anagrafiche create o modificate,
+   * scritture generiche). Non sono destinatari ammessi per gli invii: impedisce di cambiare l'email di un
+   * cliente e subito dopo inviargli un documento, una catena tipica di prompt injection.
+   */
+  readonly sessionEmails = new Set<string>();
   private readonly clientValue: FicClient | undefined;
   private company: Company | undefined;
   private companies: Company[] | undefined;

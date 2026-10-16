@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { FicError, refused } from '../api/errors.js';
@@ -83,6 +83,16 @@ Shows the SDI status of an e-invoice, the rejection reason and optionally verifi
   },
 });
 
+const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return 'URL non valido';
+  }
+}
+
 /** Host da cui il server accetta di scaricare i file dei documenti (link temporanei restituiti da FIC). */
 export function isAllowedFileHost(url: string): boolean {
   try {
@@ -143,20 +153,35 @@ Saves the PDF, delivery note, attachment or e-invoice XML of an issued document 
         );
       if (!isAllowedFileHost(url)) {
         throw refused(
-          `Il link del file punta a un host non previsto (${new URL(url).hostname}): download non eseguito per sicurezza. Usa il link da fic_get_issued_document.`,
+          `Il link del file punta a un host non previsto (${hostOf(url)}): download non eseguito per sicurezza. Usa il link da fic_get_issued_document.`,
         );
       }
       // Link firmato e temporaneo: niente header di autenticazione verso questo host.
       const res = await app.httpFetch(url, { signal: AbortSignal.timeout(60_000), redirect: 'error' });
       if (!res.ok)
         throw new FicError('server', `Download non riuscito (HTTP ${res.status})`, { status: res.status });
+      const declared = Number(res.headers.get('content-length') ?? 0);
+      if (declared > MAX_DOWNLOAD_BYTES)
+        throw refused('File troppo grande (oltre 50 MB): scaricalo dal link.');
       bytes = Buffer.from(await res.arrayBuffer());
+      if (bytes.length > MAX_DOWNLOAD_BYTES)
+        throw refused('File troppo grande (oltre 50 MB): scaricalo dal link.');
       file = join(
         dir,
         `${base}${args.kind === 'attachment' ? '_allegato' : args.kind === 'delivery_note' ? '_ddt' : ''}.pdf`,
       );
     }
-    writeFileSync(file, bytes, { mode: 0o600 });
+    // O_NOFOLLOW: se al posto del file c'è un link simbolico, non lo si segue.
+    const fd = openSync(
+      file,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      writeSync(fd, bytes);
+    } finally {
+      closeSync(fd);
+    }
     return { document_id: doc.id, kind: args.kind, path: file, bytes: bytes.length };
   },
 });

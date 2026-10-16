@@ -1,3 +1,5 @@
+import { refused } from '../api/errors.js';
+
 /**
  * Costruzione del filtro `q` dell'API (https://developers.fattureincloud.it/docs/basics/filter-results/queries/).
  * L'escape di un apice dentro un valore non è documentato: i valori con apici non vengono mai interpolati
@@ -32,7 +34,10 @@ export class Q {
   /** Uguaglianza su stringa. Valori con apici: rifiutati (l'escape non è documentato). */
   strEq(field: string, value: string | undefined): this {
     if (value === undefined || value === '') return this;
-    if (value.includes("'")) throw new Error(`Valore con apice non filtrabile esattamente: ${value}`);
+    if (value.includes("'"))
+      throw refused(
+        `Il valore ${value} contiene un apice e non si può filtrare in modo esatto: usa un altro criterio.`,
+      );
     return this.raw(`${field} = '${value}'`);
   }
 

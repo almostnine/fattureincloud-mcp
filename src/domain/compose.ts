@@ -1,3 +1,4 @@
+import { refused } from '../api/errors.js';
 import { addDays, daysBetween, endOfMonth } from './dates.js';
 import { fromCents, splitCents, toCents } from './money.js';
 import type { Entity, IssuedDocument, Item, PaymentItem } from './types.js';
@@ -23,7 +24,13 @@ const ENTITY_FIELDS = [
   'country_iso',
   'email',
   'certified_email',
+  'phone',
+  'contact_person',
   'ei_code',
+  'e_invoice',
+  'has_intent_declaration',
+  'intent_declaration_protocol_number',
+  'intent_declaration_protocol_date',
 ] as const;
 
 export function entitySnapshot(e: Entity): Entity {
@@ -64,16 +71,36 @@ export function buildInstallments(
   }));
 }
 
-/** Rate esplicite: senza importi, il totale viene diviso in parti uguali. */
+/**
+ * Rate esplicite. Gli importi indicati si rispettano; il residuo del totale da pagare si divide in parti
+ * uguali tra le rate senza importo. Se gli importi non tornano con il totale si rifiuta, invece di lasciare
+ * che `fix_payments` corregga l'ultima rata senza dirlo.
+ */
 export function explicitInstallments(
   amountDue: number,
   list: Array<{ due_date: string; amount?: number }>,
 ): PaymentItem[] {
-  if (list.every((p) => p.amount !== undefined)) {
-    return list.map((p) => ({ amount: p.amount!, due_date: p.due_date, status: 'not_paid' }));
+  const due = toCents(amountDue);
+  const given = list.reduce((a, p) => a + (p.amount !== undefined ? toCents(p.amount) : 0), 0);
+  const missing = list.filter((p) => p.amount === undefined).length;
+  const fmt = (c: number) => fromCents(c).toFixed(2);
+  if (missing === 0 && given !== due) {
+    throw refused(
+      `La somma delle rate (${fmt(given)}) è diversa dal totale da pagare calcolato da Fatture in Cloud (${fmt(due)}). Correggi gli importi oppure lasciane uno vuoto: verrà calcolato come differenza.`,
+    );
   }
-  const parts = splitCents(toCents(amountDue), list.length);
-  return list.map((p, i) => ({ amount: fromCents(parts[i]!), due_date: p.due_date, status: 'not_paid' }));
+  if (missing > 0 && given >= due) {
+    throw refused(
+      `Gli importi indicati (${fmt(given)}) coprono già il totale da pagare (${fmt(due)}): le rate senza importo resterebbero a zero.`,
+    );
+  }
+  const rest = missing > 0 ? splitCents(due - given, missing) : [];
+  let k = 0;
+  return list.map((p) => ({
+    amount: p.amount !== undefined ? p.amount : fromCents(rest[k++]!),
+    due_date: p.due_date,
+    status: 'not_paid',
+  }));
 }
 
 /** Tipi di documento che hanno rate di pagamento. */
@@ -120,7 +147,40 @@ const COPY_FIELDS = [
   'show_tspay_button',
   'h_margins',
   'v_margins',
+  'amount_due_discount',
+  'amount_rivalsa_taxable',
+  'amount_withholding_tax_taxable',
+  'amount_other_withholding_tax_taxable',
+  'amount_enasarco_taxable',
+  'ei_raw',
+  'price_list_id',
+  'delivery_note',
+  'accompanying_invoice',
+  'delivery_note_template',
+  'acc_inv_template',
+  'dn_ai_packages_number',
+  'dn_ai_weight',
+  'dn_ai_causal',
+  'dn_ai_destination',
+  'dn_ai_transporter',
+  'dn_ai_notes',
 ] as const;
+
+/** Importi imponibili che si possono impostare solo se la percentuale corrispondente è nulla (OpenAPI). */
+const TAXABLE_PAIRS: Array<[string, string]> = [
+  ['amount_cassa_taxable', 'cassa_taxable'],
+  ['amount_cassa2_taxable', 'cassa2_taxable'],
+  ['amount_global_cassa_taxable', 'global_cassa_taxable'],
+];
+
+/** Campi di extra_data che descrivono lo stato di invii già fatti: non si copiano. */
+const EXTRA_DATA_SKIP = new Set([
+  'ts_status',
+  'ts_file_id',
+  'ts_sent_date',
+  'imported_by',
+  'multifatture_sent',
+]);
 
 const ITEM_COPY = [
   'product_id',
@@ -162,6 +222,17 @@ export function duplicateBody(
     const v = src[k];
     if (v !== null && v !== undefined) out[k] = v;
   }
+  for (const [amount, pct] of TAXABLE_PAIRS) {
+    if (src[pct as keyof IssuedDocument] !== null && src[pct as keyof IssuedDocument] !== undefined)
+      delete out[amount];
+  }
+  const extra = src.extra_data;
+  if (extra) {
+    const kept = Object.fromEntries(
+      Object.entries(extra).filter(([k, v]) => !EXTRA_DATA_SKIP.has(k) && v !== null),
+    );
+    if (Object.keys(kept).length) out.extra_data = kept;
+  }
   if (!opts.keepNumeration) delete out.numeration;
   out.date = opts.date;
   out.entity = entitySnapshot(opts.entity);
@@ -192,13 +263,14 @@ export function duplicateBody(
 }
 
 /**
- * Rate del documento duplicato: stesse distanze in giorni dalla data del documento e stesse proporzioni
- * degli importi dell'originale, applicate al nuovo totale da pagare calcolato da FIC.
+ * Rate del documento duplicato: stesse proporzioni degli importi dell'originale, applicate al nuovo totale
+ * da pagare calcolato da FIC. Le scadenze si ricalcolano dai termini della rata (giorni e fine mese) quando
+ * ci sono, altrimenti con la stessa distanza in giorni dalla data del documento. Se l'originale non ha rate,
+ * nemmeno la copia ne ha.
  */
 export function shiftedInstallments(src: IssuedDocument, newDate: string, amountDue: number): PaymentItem[] {
   const list = (src.payments_list ?? []).filter((p) => p.status !== 'reversed');
-  if (!list.length || !src.date)
-    return buildInstallments(amountDue, newDate, 1, { days: 30, type: 'standard' });
+  if (!list.length) return [];
   const origTotal = list.reduce((a, p) => a + toCents(p.amount), 0);
   const due = toCents(amountDue);
   let assigned = 0;
@@ -210,13 +282,18 @@ export function shiftedInstallments(src: IssuedDocument, newDate: string, amount
           ? Math.round((due * toCents(p.amount)) / origTotal)
           : 0;
     assigned += cents;
-    const offset = p.due_date ? daysBetween(src.date!, p.due_date) : 30;
-    const terms = p.payment_terms?.type === 'end_of_month' ? 'end_of_month' : 'standard';
+    const type = p.payment_terms?.type === 'end_of_month' ? 'end_of_month' : 'standard';
+    const days = p.payment_terms?.days;
+    let dueDate: string;
+    if (days !== null && days !== undefined) dueDate = dueDateFor(newDate, { days, type });
+    else if (p.due_date && src.date) dueDate = addDays(newDate, daysBetween(src.date, p.due_date));
+    else dueDate = addDays(newDate, 30);
     return {
       amount: fromCents(cents),
-      due_date: terms === 'end_of_month' ? endOfMonth(addDays(newDate, offset)) : addDays(newDate, offset),
+      due_date: dueDate,
       status: 'not_paid',
-      ...(p.payment_terms ? { payment_terms: { days: p.payment_terms.days ?? offset, type: terms } } : {}),
+      ...(days !== null && days !== undefined ? { payment_terms: { days, type } } : {}),
+      ...(p.ei_raw ? { ei_raw: p.ei_raw } : {}),
     };
   });
 }

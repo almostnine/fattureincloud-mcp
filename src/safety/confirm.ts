@@ -12,7 +12,7 @@ import { refused } from '../api/errors.js';
 
 export const CONFIRM_TTL_MS = 10 * 60 * 1000;
 
-export type ConfirmAction = 'SDI' | 'EMAIL' | 'DEL' | 'HOOK';
+export type ConfirmAction = 'SDI' | 'EMAIL' | 'DEL' | 'HOOK' | 'CFG';
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
@@ -26,6 +26,8 @@ function canonical(value: unknown): string {
 export class ConfirmService {
   private readonly secret: Buffer;
   private readonly now: () => number;
+  /** Token già usati: ogni token vale per una sola esecuzione. */
+  private readonly used = new Set<string>();
 
   constructor(opts: { secret?: Buffer; now?: () => number } = {}) {
     this.secret = opts.secret ?? randomBytes(32);
@@ -71,5 +73,7 @@ export class ConfirmService {
         `Il token di conferma non corrisponde: il documento è cambiato dopo l’anteprima oppure i parametri sono diversi da quelli mostrati. ${again}`,
       );
     }
+    if (this.used.has(mac)) throw refused(`Questo token di conferma è già stato usato. ${again}`);
+    this.used.add(mac);
   }
 }

@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BUNDLE=${1:-dist/index.js}
+export npm_config_ignore_scripts=true
 INSPECTOR="npx -y @modelcontextprotocol/inspector@2.9.0 --cli"
 
 count() {

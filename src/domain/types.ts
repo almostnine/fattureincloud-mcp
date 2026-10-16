@@ -108,6 +108,9 @@ export interface Entity {
   bank_iban?: string | null;
   bank_name?: string | null;
   has_intent_declaration?: boolean | null;
+  intent_declaration_protocol_number?: string | null;
+  intent_declaration_protocol_date?: string | null;
+  shipping_address?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -172,6 +175,17 @@ export interface IssuedDocument {
   amount_gross?: number | null;
   amount_due_discount?: number | null;
   amount_rivalsa?: number | null;
+  amount_rivalsa_taxable?: number | null;
+  amount_withholding_tax_taxable?: number | null;
+  amount_other_withholding_tax_taxable?: number | null;
+  amount_enasarco_taxable?: number | null;
+  extra_data?: Record<string, unknown> | null;
+  dn_ai_packages_number?: number | null;
+  dn_ai_weight?: number | null;
+  dn_ai_causal?: string | null;
+  dn_ai_destination?: string | null;
+  dn_ai_transporter?: string | null;
+  dn_ai_notes?: string | null;
   amount_withholding_tax?: number | null;
   amount_other_withholding_tax?: number | null;
   ei_raw?: unknown;

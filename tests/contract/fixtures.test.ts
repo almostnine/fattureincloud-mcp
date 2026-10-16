@@ -79,6 +79,27 @@ describe('fixture conformi all’OpenAPI', () => {
     ).toEqual([]);
   });
 
+  it('documento in attesa di registrazione', () => {
+    expect(
+      validate('listPendingReceivedDocuments', {
+        data: [
+          {
+            id: 7,
+            type: 'mail',
+            date: '2026-10-01',
+            document_type: 'expense',
+            supplier_name: 'Fornitore Esempio Srl',
+            subject: 'Fattura n. 12',
+            amount_gross: 122,
+          },
+        ],
+        current_page: 1,
+        last_page: 1,
+        total: 1,
+      }),
+    ).toEqual([]);
+  });
+
   it('i validatori rilevano davvero le fixture sbagliate', () => {
     expect(
       validate('getIssuedDocument', { data: invoice({ type: 'fattura' as never }) }).length,

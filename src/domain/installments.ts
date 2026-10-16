@@ -1,6 +1,6 @@
 import { untrusted } from '../safety/untrusted.js';
 import { daysBetween } from './dates.js';
-import { displayNumber, entityName } from './documents.js';
+import { displayNumber, entityName, isOpen } from './documents.js';
 import { fromCents, toCents } from './money.js';
 import type { IssuedDocument } from './types.js';
 
@@ -44,7 +44,7 @@ export function installmentRows(docs: IssuedDocument[], f: RowFilter): Installme
     const list = d.payments_list ?? [];
     list.forEach((p, i) => {
       const status = p.status ?? 'not_paid';
-      const open = status === 'not_paid';
+      const open = isOpen(p);
       const overdue = open && Boolean(p.due_date && p.due_date < f.today);
       if (f.status === 'overdue' && !overdue) return;
       if (f.status === 'not_paid' && !open) return;

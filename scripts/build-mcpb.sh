@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Strumenti fuori dal lock file: versione fissa e script di installazione disattivati.
+export npm_config_ignore_scripts=true
 MCPB="npx -y @anthropic-ai/mcpb@2.1.2"
 NAME=$(node -p "require('./package.json').name")
 VERSION=$(node -p "require('./package.json').version")

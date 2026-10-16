@@ -70,7 +70,7 @@ describe('fic_list_issued_documents', () => {
     const { app } = testApp({ fic });
     const res = await call(await connect(app), 'fic_list_issued_documents', { payment_status: 'overdue' });
     expect(fic.callsTo('/c/1001/issued_documents')).toHaveLength(2);
-    expect(fic.callsTo('/c/1001/issued_documents')[0]!.query.q).toBe("next_due_date < '2026-10-16'");
+    expect(fic.callsTo('/c/1001/issued_documents')[0]!.query.q).toBe('next_due_date is not null');
     expect((res.data.items as unknown[]).length).toBe(1);
     expect(res.data.sums).toMatchObject({ amount_overdue: 301 });
   });

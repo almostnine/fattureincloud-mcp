@@ -63,9 +63,26 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
   handler: async (args, app) => {
     const client = await app.api();
     const today = todayRome(app.now());
-    const period = resolvePeriod(args, app.now(), true) as { from: string; to: string };
+    const p = resolvePeriod(args, app.now(), true);
+    // Con un solo estremo: dal 1° gennaio dell'anno di date_to, oppure fino al 31 dicembre dell'anno di date_from.
+    const from = p.from ?? `${(p.to ?? today).slice(0, 4)}-01-01`;
+    const period = { from, to: p.to ?? `${from.slice(0, 4)}-12-31` };
     const max = app.config.maxPages;
-    const issuedFields = 'id,type,date,amount_net,amount_vat,amount_gross,payments_list';
+    const issuedFields = 'id,type,date,currency,amount_net,amount_vat,amount_gross,payments_list';
+    // Gli importi sono nella valuta del documento: i documenti non in euro restano fuori dalle somme.
+    const other = new Map<string, { documents: number; gross: number }>();
+    const inEuro = (
+      d: { currency?: { id?: string | null } | null; amount_gross?: number | null },
+      sign = 1,
+    ) => {
+      const cur = d.currency?.id;
+      if (!cur || cur === 'EUR') return true;
+      const o = other.get(cur) ?? { documents: 0, gross: 0 };
+      o.documents++;
+      o.gross += sign * toCents(d.amount_gross);
+      other.set(cur, o);
+      return false;
+    };
     const issuedQ = (from: string) => {
       const q = new Q().dateGte('date', from).dateLte('date', period.to);
       if (args.client_id) q.eq('entity.id', args.client_id);
@@ -111,6 +128,7 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
       }
     };
     for (const d of invoices.items) {
+      if (!inEuro(d)) continue;
       add(revenue.invoices, d);
       (d.payments_list ?? []).forEach(inst);
       const m = month(d.date);
@@ -118,6 +136,7 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
       m.revenue_gross += toCents(d.amount_gross);
     }
     for (const d of creditNotes.items) {
+      if (!inEuro(d, -1)) continue;
       add(revenue.credit_notes, d);
       const m = month(d.date);
       m.revenue_net -= toCents(d.amount_net);
@@ -133,11 +152,12 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
     let cashBasis: Record<string, unknown> | undefined;
     if (args.cash_basis) {
       // Gli incassi del periodo possono riguardare fatture dell'anno precedente.
-      const from = `${Number(period.from.slice(0, 4)) - 1}-01-01`;
-      const wide = await issued('invoice', from);
+      const wideFrom = `${Number(period.from.slice(0, 4)) - 1}-01-01`;
+      const wide = await issued('invoice', wideFrom);
       if (wide.truncated) truncated.push('fatture per gli incassi');
       let cash = 0;
       for (const d of wide.items) {
+        if (d.currency?.id && d.currency.id !== 'EUR') continue;
         for (const p of d.payments_list ?? []) {
           if (p.status === 'paid' && p.paid_date && p.paid_date >= period.from && p.paid_date <= period.to) {
             cash += toCents(p.amount);
@@ -147,7 +167,7 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
       }
       cashBasis = {
         collected_in_period: fromCents(cash),
-        note: `Rate pagate con data di pagamento nel periodo, su fatture emesse dal ${from}.`,
+        note: `Rate pagate con data di pagamento nel periodo, su fatture emesse dal ${wideFrom}.`,
       };
     }
 
@@ -161,7 +181,7 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
           {
             operationId: 'listReceivedDocuments',
             path: '/c/{company_id}/received_documents',
-            query: { type, q: rq, fields: 'id,type,date,amount_net,amount_vat,amount_gross' },
+            query: { type, q: rq, fields: 'id,type,date,currency,amount_net,amount_vat,amount_gross' },
           },
           max,
         );
@@ -170,10 +190,12 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
       if (expenses.truncated || passiveCn.truncated) truncated.push('costi');
       const c = acc();
       for (const d of expenses.items) {
+        if (!inEuro(d, -1)) continue;
         add(c, d);
         month(d.date).costs_net += toCents(d.amount_net);
       }
       for (const d of passiveCn.items) {
+        if (!inEuro(d)) continue;
         add(c, d, -1);
         month(d.date).costs_net -= toCents(d.amount_net);
       }
@@ -206,6 +228,14 @@ Revenue, collected, outstanding, overdue and costs for a period, reading all pag
               costs_net: costs ? fromCents(v.costs_net) : undefined,
               collected: args.cash_basis ? fromCents(v.collected) : undefined,
             }))
+        : undefined,
+      other_currencies: other.size
+        ? {
+            note: 'Documenti in valuta diversa dall’euro, esclusi dalle somme: importi lordi nella loro valuta (ricavi meno costi).',
+            by_currency: Object.fromEntries(
+              [...other].map(([k, v]) => [k, { documents: v.documents, gross: fromCents(v.gross) }]),
+            ),
+          }
         : undefined,
       truncated: truncated.length
         ? `Dati incompleti per: ${truncated.join(', ')}. Restringi il periodo o aumenta FIC_MAX_PAGES.`

@@ -8,34 +8,13 @@ import { callOp } from '../api/ops.js';
 import { MAX_PER_PAGE } from '../api/paginate.js';
 import type { Mode } from '../config.js';
 import type { AppContext } from '../context.js';
-import { cleanOutgoingText, untrusted } from '../safety/untrusted.js';
+import { cleanOutgoingText } from '../safety/untrusted.js';
+import { wrapFreeText } from '../safety/wrap.js';
 import { defineTool } from './define.js';
 import { toolRegistry } from './registry.js';
 
 const API_REFERENCE = 'https://developers.fattureincloud.it/api-reference/';
 const MAX_OUTPUT_CHARS = 120_000;
-
-/** Campi di testo libero che possono contenere istruzioni scritte da terzi. */
-const FREE_TEXT_KEYS = new Set([
-  'notes',
-  'description',
-  'subject',
-  'visible_subject',
-  'body',
-  'message',
-  'reason',
-  'name',
-  'entity_name',
-  'contact_person',
-  'address_street',
-  'address_extra',
-  'shipping_address',
-  'dn_ai_notes',
-  'dn_ai_destination',
-  'causal',
-  'details',
-  'title',
-]);
 
 const MODE_FOR: Record<Effect, Mode> = {
   read: 'readonly',
@@ -58,20 +37,6 @@ const SEND_TOOL: Record<string, string> = {
   sendEInvoice: 'fic_send_einvoice',
   scheduleEmail: 'fic_send_email',
 };
-
-/** Delimita i testi liberi in una risposta generica, ricorsivamente. */
-export function wrapFreeText(value: unknown, depth = 0): unknown {
-  if (depth > 12) return value;
-  if (Array.isArray(value)) return value.map((v) => wrapFreeText(v, depth + 1));
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) {
-      out[k] = typeof v === 'string' && FREE_TEXT_KEYS.has(k) ? untrusted(v) : wrapFreeText(v, depth + 1);
-    }
-    return out;
-  }
-  return value;
-}
 
 /** Tiene la risposta entro la dimensione gestibile da Claude Desktop tagliando gli elenchi. */
 function fitSize(value: Record<string, unknown>): Record<string, unknown> {
@@ -279,6 +244,24 @@ function readUploadFile(app: AppContext, filePath: string): { name: string; byte
   return { name: basename(real), bytes: readFileSync(real) };
 }
 
+const SENSITIVE_OPS = new Set([
+  'createPaymentAccount',
+  'modifyPaymentAccount',
+  'createPaymentMethod',
+  'modifyPaymentMethod',
+]);
+const BANK_KEY = /iban|bank_|swift|bic|beneficiary/i;
+
+function hasBankKey(value: unknown, depth = 0): boolean {
+  if (depth > 10 || !value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([k, v]) => BANK_KEY.test(k) || hasBankKey(v, depth + 1));
+}
+
+/** Scritture che toccano dati di pagamento: richiedono anteprima e conferma. */
+function isSensitive(op: CatalogOperation, body: unknown): boolean {
+  return SENSITIVE_OPS.has(op.id) || hasBankKey(body);
+}
+
 function cleanBody(value: unknown, depth = 0): unknown {
   if (depth > 12) return value;
   if (typeof value === 'string') return cleanOutgoingText(value);
@@ -293,7 +276,7 @@ export const apiWrite = defineTool({
   name: 'fic_api_write',
   title: 'Esegui un’operazione di scrittura API',
   description: `Esegue un'operazione di creazione o modifica dell'API di Fatture in Cloud (${API_REFERENCE}) per operationId: prodotti, corrispettivi, F24, archivio, prima nota, impostazioni (conti, metodi di pagamento, aliquote), recupero dal cestino, caricamento di allegati. Per i caricamenti passa file_path: il file deve stare nella cartella di scambio FIC_DOWNLOAD_DIR.
-Non esegue invii (fic_send_einvoice, fic_send_email) né cancellazioni (fic_delete). Le operazioni sui webhook, che inviano dati a un URL esterno, richiedono la modalità full e una conferma con anteprima.
+Non esegue invii (fic_send_einvoice, fic_send_email) né cancellazioni (fic_delete). Le operazioni sui webhook, che inviano dati a un URL esterno, richiedono la modalità full e una conferma con anteprima. Anche le modifiche a conti di saldo, metodi di pagamento e coordinate bancarie (IBAN) richiedono anteprima e conferma.
 Trova operazione e campi con fic_api_catalog. Per documenti, rate e anagrafiche preferisci i tool dedicati.
 Runs a create or update Fatture in Cloud API operation by operationId.`,
   minMode: 'write',
@@ -312,7 +295,7 @@ Runs a create or update Fatture in Cloud API operation by operationId.`,
       .string()
       .max(80)
       .optional()
-      .describe('Solo per i webhook: token dell’anteprima, dopo il sì esplicito dell’utente.'),
+      .describe('Per webhook e dati di pagamento: token dell’anteprima, dopo il sì esplicito dell’utente.'),
   }),
   operations: OPERATIONS.filter((o) => o.effect === 'write' || o.effect === 'external').map((o) => o.id),
   handler: async (args, app) => {
@@ -372,6 +355,26 @@ Runs a create or update Fatture in Cloud API operation by operationId.`,
         };
       }
       app.confirm.verify(args.confirm, 'HOOK', id, '', params);
+    }
+
+    if (isSensitive(op, body)) {
+      // Conti, metodi di pagamento e coordinate bancarie: il cambio di IBAN è una frode classica.
+      const id = Object.values(args.path_params).map(String).join('_') || 'new';
+      const params = { op: op.id, path: args.path_params, query: args.query, body: body ?? null };
+      if (!args.confirm) {
+        return {
+          preview: true,
+          executed: false,
+          operation_id: op.id,
+          changes: wrapFreeText(body ?? {}),
+          warning:
+            'Questa operazione modifica dati di pagamento (conti, metodi di pagamento o coordinate bancarie): verifica ogni valore con l’utente, soprattutto IBAN e beneficiario.',
+          confirm_token: app.confirm.issue('CFG', id, '', params),
+          instructions:
+            'Mostra l’anteprima all’utente; solo dopo il suo sì esplicito richiama con gli stessi parametri e confirm.',
+        };
+      }
+      app.confirm.verify(args.confirm, 'CFG', id, '', params);
     }
 
     const res = await callOp<unknown>(client, op.id, {

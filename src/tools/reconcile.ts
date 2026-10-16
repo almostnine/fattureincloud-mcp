@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { fetchAll } from '../api/paginate.js';
 import { isoDate, todayRome } from '../domain/dates.js';
 import { installmentRows } from '../domain/installments.js';
-import { matchTransaction } from '../domain/reconcile.js';
+import { buildIndex, matchKeys, matchTransaction } from '../domain/reconcile.js';
 import type { IssuedDocument } from '../domain/types.js';
 import { untrusted } from '../safety/untrusted.js';
 import { defineTool } from './define.js';
@@ -54,6 +54,9 @@ Matches incoming bank transactions with unpaid installments and proposes matches
     );
     const rows = installmentRows(all.items, { status: 'not_paid', today });
     const tolerance = Math.round(args.tolerance * 100);
+    const index = buildIndex(rows);
+    // Una rata abbinata con alta confidenza a un movimento non viene proposta per i successivi.
+    const used = new Set<string>();
     const results = args.transactions.map((tx, i) => {
       const base = {
         index: i + 1,
@@ -63,7 +66,8 @@ Matches incoming bank transactions with unpaid installments and proposes matches
         ref: tx.ref,
       };
       if (tx.amount <= 0) return { ...base, skipped: 'uscita o importo nullo' };
-      const matches = matchTransaction(tx, rows, tolerance);
+      const matches = matchTransaction(tx, index, tolerance, used);
+      if (matches[0]?.confidence === 'high') for (const k of matchKeys(matches[0])) used.add(k);
       return {
         ...base,
         matches: matches.length ? matches : undefined,
@@ -82,7 +86,7 @@ Matches incoming bank transactions with unpaid installments and proposes matches
         ? 'Non tutte le fatture con rate aperte sono state lette: aumenta FIC_MAX_PAGES.'
         : undefined,
       next_step:
-        'Mostra le proposte all’utente; per ogni abbinamento confermato usa fic_set_installment_status con paid_date uguale alla data del movimento.',
+        'Mostra le proposte all’utente, anche il secondo candidato quando c’è; per ogni abbinamento confermato dall’utente usa fic_set_installment_status con paid_date uguale alla data del movimento.',
     };
   },
 });

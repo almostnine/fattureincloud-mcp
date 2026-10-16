@@ -36,7 +36,7 @@ describe('fic_list_installments', () => {
     const { app } = testApp({ fic });
     const res = await call(await connect(app), 'fic_list_installments', { group_by_client: true });
     expect(res.isError).toBe(false);
-    expect(fic.callsTo('/c/1001/issued_documents')[0]!.query.q).toBe("next_due_date < '2026-10-16'");
+    expect(fic.callsTo('/c/1001/issued_documents')[0]!.query.q).toBe('next_due_date is not null');
     expect(res.data.count).toBe(2);
     expect(res.data.amount_total).toBe(401);
     const items = res.data.items as Array<Record<string, unknown>>;

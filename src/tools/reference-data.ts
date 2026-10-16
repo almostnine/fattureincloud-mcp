@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { refused } from '../api/errors.js';
 import type { AppContext } from '../context.js';
 import type { ListResponse, PaymentAccount } from '../domain/types.js';
-import { untrusted } from '../safety/untrusted.js';
+import { wrapFreeText } from '../safety/wrap.js';
 import { defineTool } from './define.js';
 
 interface RefList {
@@ -146,7 +146,8 @@ export async function loadList<T = Record<string, unknown>>(
     query: { ...def.query, ...extra },
   });
   const data = res?.data ?? [];
-  app.cache.set(key, data, app.config.cacheTtlSeconds, def.persist);
+  // Un elenco vuoto può essere un effetto di permessi o configurazione: non lo si conserva.
+  if (data.length) app.cache.set(key, data, app.config.cacheTtlSeconds, def.persist);
   return data;
 }
 
@@ -165,9 +166,7 @@ function present(name: RefListName, rows: Array<Record<string, unknown>>) {
   )
     return rows;
   return rows.map((r) => {
-    const out: Record<string, unknown> = { ...r };
-    for (const k of ['notes', 'description', 'details'])
-      if (typeof out[k] === 'string') out[k] = untrusted(out[k]);
+    const out = wrapFreeText(r) as Record<string, unknown>;
     return out;
   });
 }
@@ -210,7 +209,11 @@ Reference lists: payment accounts, payment methods, VAT types, cost and revenue 
         path: '/c/{company_id}/price_lists/{price_list_id}/items',
         pathParams: { price_list_id: args.price_list_id },
       });
-      return { list: 'price_list_items', price_list_id: args.price_list_id, items: res?.data ?? [] };
+      return {
+        list: 'price_list_items',
+        price_list_id: args.price_list_id,
+        items: wrapFreeText(res?.data ?? []),
+      };
     }
     const extra: Record<string, string> = {};
     if (args.postal_code) extra.postal_code = args.postal_code;

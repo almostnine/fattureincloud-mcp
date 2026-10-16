@@ -26,7 +26,9 @@ Runtime (solo due):
 
 Niente SDK FIC a runtime: dipende da `axios` e `form-data`, è generato in modo generico e non ci dà controllo su retry, 403 di quota, paginazione ed errori. Al suo posto un client `fetch` nativo di circa 300 righe. I tipi dei dati usati dai tool (documenti, rate, anagrafiche) sono scritti a mano sul sottoinsieme che serve; le fixture dei test sono validate contro gli schemi dell'OpenAPI, così i tipi non possono allontanarsi dalla realtà senza che un test se ne accorga. (`openapi-typescript` è stato scartato: richiede TypeScript 5 come peer.)
 
-Sviluppo: `typescript` 7, `esbuild`, `vitest`, `@biomejs/biome` (lint e formattazione in un solo strumento), `@modelcontextprotocol/client` (per i test), `yaml` e `tsx` (generazione del catalogo), `ajv` (per validare le fixture contro gli schemi dell'OpenAPI), `@anthropic-ai/mcpb` (CLI di pacchettizzazione), `@modelcontextprotocol/inspector` (solo per le prove, richiede Node 22.19+).
+Sviluppo: `typescript` 7, `esbuild`, `vitest`, `@biomejs/biome` (lint e formattazione in un solo strumento), `@modelcontextprotocol/client` (per i test), `yaml` e `tsx` (generazione del catalogo), `ajv` (per validare le fixture contro gli schemi dell'OpenAPI). La CLI `@anthropic-ai/mcpb` e `@modelcontextprotocol/inspector` si lanciano con `npx` a versione fissa e non entrano nel lock file: la prima porta dipendenze con vulnerabilità note, la seconda richiede Node 22.19+.
+
+Gli strumenti di sviluppo (Vitest 5) richiedono Node 22 o superiore; il server resta compatibile con Node 20, verificato in CI con una prova MCP su stdio senza dipendenze (`scripts/smoke-stdio.mjs`).
 
 Regole:
 - versioni **esatte** in `package.json` e `package-lock.json` versionato; installazione con `npm ci`;
@@ -306,5 +308,5 @@ La spec 2026-07-28 consente al server di chiedere una conferma direttamente all'
   - `FIC_IT_READONLY=1`: sola lettura sull'account reale con il token in sola lettura letto da `.env`; il server viene avviato in modalità `readonly` e il test verifica che nessuna operazione di scrittura sia raggiungibile;
   - `FIC_IT_TRIAL=1`: scritture sull'account di prova. Il test parte solo se `/user/companies` riporta per quell'azienda `fic_plan: "trial"` e l'ID coincide con `FIC_IT_TRIAL_COMPANY_ID`; altrimenti si ferma prima di qualsiasi scrittura. L'invio SDI, anche in prova (`dry_run`), non è disponibile sul piano Trial: si verifica solo l'anteprima e il rifiuto corretto.
 - **MCP Inspector**: `npx @modelcontextprotocol/inspector --cli node dist/index.js --method tools/list --strict` in CI per ogni modalità; prova interattiva documentata in `docs/REVIEW.md`.
-- **CI GitHub Actions**: lint, type check, test, `npm audit`, build del bundle e del `.mcpb`, controllo con Inspector. Dependabot non va attivato: il mirror dall'hub (`git push --mirror`) cancellerebbe i suoi branch. Gli aggiornamenti si fanno in locale.
+- **CI GitHub Actions**: lint, type check, test e `npm audit` su Node 22, 24 e 26; avvio del bundle su Node 20; build del `.mcpb` e controllo con Inspector (`scripts/check-bundle.sh`). Action fissate per SHA, installazione con `--ignore-scripts`. Dependabot non va attivato: il mirror dall'hub (`git push --mirror`) cancellerebbe i suoi branch. Gli aggiornamenti si fanno in locale.
 - **Copertura dell'API**: `docs/COVERAGE.md` generato dal catalogo; un test fallisce se un'operazione del catalogo non è raggiungibile da nessun tool.

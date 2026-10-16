@@ -23,7 +23,9 @@
     "entry_point": "dist/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/index.js"],
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
       "env": {
         "FIC_ACCESS_TOKEN": "${user_config.fic_access_token}",
         "FIC_COMPANY_ID": "${user_config.fic_company_id}",
@@ -163,7 +165,11 @@
     "https://www.fattureincloud.it/privacy/"
   ],
   "compatibility": {
-    "platforms": ["darwin", "win32", "linux"]
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ]
   },
   "user_config": {
     "fic_access_token": {

@@ -69,12 +69,19 @@ describe('ogni operazione di scrittura passa da fic_api_write', () => {
     const fic = makeFic();
     const { app } = testApp({ fic, mode: 'write', config: { downloadDir: dir } });
     const multipart = op.body?.contentType.startsWith('multipart/');
-    const res = await call(await connect(app), 'fic_api_write', {
+    const client = await connect(app);
+    const args = {
       operation_id: op.id,
       path_params: pathParams(op),
       query: requiredQuery(op),
       ...(multipart ? { file_path: 'allegato.pdf' } : op.body ? { body: { data: {} } } : {}),
-    });
+    };
+    let res = await call(client, 'fic_api_write', args);
+    if (res.data.preview) {
+      // Dati di pagamento: anteprima, poi conferma.
+      expect(fic.calls.some((c) => c.method === op.method && expectedPath(op).test(c.path))).toBe(false);
+      res = await call(client, 'fic_api_write', { ...args, confirm: res.data.confirm_token });
+    }
     expect(res.isError, res.text).toBe(false);
     const sent = fic.calls.at(-1)!;
     expect(sent.method).toBe(op.method);

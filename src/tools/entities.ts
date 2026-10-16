@@ -50,7 +50,7 @@ export function entitySummary(e: Entity) {
     type: e.type || undefined,
     vat_number: e.vat_number || undefined,
     tax_code: e.tax_code || undefined,
-    city: e.address_city || undefined,
+    city: untrusted(e.address_city, 100),
     email: e.email || undefined,
     certified_email: e.certified_email || undefined,
   };
@@ -59,14 +59,14 @@ export function entitySummary(e: Entity) {
 export function entityDetail(e: Entity) {
   return {
     ...entitySummary(e),
-    first_name: e.first_name || undefined,
-    last_name: e.last_name || undefined,
+    first_name: untrusted(e.first_name, 100),
+    last_name: untrusted(e.last_name, 100),
     contact_person: untrusted(e.contact_person, 200),
     address: {
       street: untrusted(e.address_street, 200),
       postal_code: e.address_postal_code,
-      city: e.address_city,
-      province: e.address_province,
+      city: untrusted(e.address_city, 100),
+      province: untrusted(e.address_province, 10),
       extra: untrusted(e.address_extra, 200),
       country: e.country,
       country_iso: e.country_iso,
@@ -253,7 +253,14 @@ const entityFields = {
   notes: z.string().max(2000).optional(),
 };
 
-function cleanEntity(data: Record<string, unknown>): Record<string, unknown> {
+/** Campi che esistono solo per i clienti (schema Client dell'OpenAPI). */
+const CLIENT_ONLY = ['ei_code', 'e_invoice', 'default_payment_terms'];
+
+function cleanEntity(data: Record<string, unknown>, kind: 'client' | 'supplier'): Record<string, unknown> {
+  if (kind === 'supplier') {
+    const bad = CLIENT_ONLY.filter((k) => data[k] !== undefined);
+    if (bad.length) throw refused(`Per i fornitori questi campi non esistono: ${bad.join(', ')}.`);
+  }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(data)) {
     if (v === undefined) continue;
@@ -283,7 +290,7 @@ Creates a client or supplier.`,
       operationId: p.createOp,
       method: 'POST',
       path: p.list,
-      body: { data: cleanEntity(data) },
+      body: { data: cleanEntity(data, kind) },
     });
     app.log.audit('anagrafica creata', { kind, id: res?.data?.id });
     return { kind, created: true, ...entityDetail(res?.data ?? {}) };
@@ -300,7 +307,7 @@ Updates the given fields of a client or supplier.`,
   input: z.object({ kind: kindSchema, id: z.number().int().positive(), ...entityFields }),
   operations: ['getClient', 'getSupplier', 'modifyClient', 'modifySupplier'],
   handler: async ({ kind, id, ...data }, app) => {
-    const changes = cleanEntity(data);
+    const changes = cleanEntity(data, kind);
     if (Object.keys(changes).length === 0) throw refused('Nessun campo da modificare.');
     const before = await getEntity(app, kind, id);
     const client = await app.api();

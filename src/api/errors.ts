@@ -1,3 +1,5 @@
+import { OPERATIONS } from './catalog.generated.js';
+
 /**
  * Errori dell'API di Fatture in Cloud e traduzione in messaggi per il modello.
  * Formati documentati: https://developers.fattureincloud.it/docs/basics/errors/
@@ -97,7 +99,8 @@ export function parseErrorBody(
   return {};
 }
 
-const QUOTA_HINT = /quota|limit|limite|too many|troppe/i;
+// Solo formulazioni esplicite: un 403 "limite di documenti del piano" non è una quota API esaurita.
+const QUOTA_HINT = /\bquota\b|too many requests|rate limit/i;
 
 export function classifyHttpError(
   status: number,
@@ -146,7 +149,15 @@ const DOC_TYPE_SCOPE: Record<string, string> = {
 export function concreteScopes(scopes: string[] | undefined, docType?: string): string[] {
   if (!scopes) return [];
   const t = docType ? DOC_TYPE_SCOPE[docType] : undefined;
-  return scopes.map((s) => (t ? s.replace('{tipo}', t) : s));
+  return scopes.map((s) => s.replace('{tipo}', t ?? '<tipo di documento, per esempio invoices>'));
+}
+
+/** Creazioni e invii non si possono ripetere alla cieca: un timeout non dice se sono avvenuti. */
+function isNonIdempotentWrite(operationId: string | undefined): boolean {
+  const op = OPERATIONS.find((o) => o.id === operationId);
+  return Boolean(
+    op && op.method === 'POST' && (op.effect === 'write' || op.effect === 'send' || op.effect === 'external'),
+  );
 }
 
 /** Testo per il modello: cosa è successo e cosa fare. Mai traceback, mai dati sensibili. */
@@ -155,7 +166,11 @@ export function errorToText(err: unknown, docType?: string): string {
     return 'Errore interno del server MCP. Dettagli nei log del server. Cosa fare: riprova; se si ripete, segnala il problema.';
   }
   const d = err.details;
-  const api = d.apiMessage ? ` Messaggio di Fatture in Cloud: "${d.apiMessage}".` : '';
+  // Il messaggio dell'API può riportare testi inseriti da terzi: lo si delimita come dato.
+  const api = d.apiMessage ? ` Messaggio di Fatture in Cloud: ⟦${d.apiMessage.replace(/[⟦⟧]/g, '')}⟧.` : '';
+  const unsafeToRetry = isNonIdempotentWrite(d.operationId)
+    ? ' ATTENZIONE: l’operazione potrebbe essere stata eseguita comunque. Prima di riprovare verifica (per esempio con fic_list_issued_documents) che il documento non sia già stato creato o inviato, per non duplicarlo.'
+    : '';
   const scopes = concreteScopes(d.scopes, docType);
   const scopeText = scopes.length ? scopes.map((s) => `\`${s}\``).join(' oppure ') : undefined;
 
@@ -188,17 +203,19 @@ export function errorToText(err: unknown, docType?: string): string {
     case 'conflict':
       return `Operazione rifiutata per conflitto (409).${api} Cause tipiche: documento bloccato perché già inviato allo SDI, numero già usato, numerazione non cronologica, cliente duplicato, limiti del piano, servizio e-fattura non attivo. Cosa fare: leggi il messaggio, correggi i dati e riprova.`;
     case 'validation': {
-      const v = d.validation?.length ? ` Campi da correggere: ${d.validation.join('; ')}.` : '';
+      const v = d.validation?.length
+        ? ` Campi da correggere: ⟦${d.validation.join('; ').replace(/[⟦⟧]/g, '')}⟧.`
+        : '';
       const t = d.totals ? ` Totali calcolati da FIC: ${JSON.stringify(d.totals)}.` : '';
       return `Dati non validi (422).${api}${v}${t} Cosa fare: correggi i campi indicati; se il problema è il totale dei pagamenti, lascia calcolare le rate a Fatture in Cloud.`;
     }
     case 'bad_request':
       return `Richiesta non valida (${d.status ?? 400}).${api} Cosa fare: controlla i parametri passati al tool.`;
     case 'server':
-      return `Fatture in Cloud ha risposto con un errore interno (${d.status ?? 500}).${api} Può dipendere da caratteri non supportati (per esempio emoji) in un campo di testo. Cosa fare: riprova più tardi o semplifica i testi.`;
+      return `Fatture in Cloud ha risposto con un errore interno (${d.status ?? 500}).${api} Può dipendere da caratteri non supportati (per esempio emoji) in un campo di testo. Cosa fare: riprova più tardi o semplifica i testi.${unsafeToRetry}`;
     case 'network':
-      return 'Fatture in Cloud non è raggiungibile (errore di rete). Cosa fare: controlla la connessione e riprova.';
+      return `Fatture in Cloud non è raggiungibile (errore di rete). Cosa fare: controlla la connessione e riprova.${unsafeToRetry}`;
     case 'timeout':
-      return 'Fatture in Cloud non ha risposto entro 30 secondi. Cosa fare: riprova; per elenchi molto grandi restringi il periodo.';
+      return `Fatture in Cloud non ha risposto entro 30 secondi. Cosa fare: riprova; per elenchi molto grandi restringi il periodo.${unsafeToRetry}`;
   }
 }

@@ -111,10 +111,9 @@ Lists issued documents (invoices, credit notes, quotes...) with filters, paginat
     q.textContains('entity.name', args.client_name);
     if (args.number) q.eq('number', args.number);
     if (args.numeration) q.strEq('numeration', args.numeration);
-    // Restringe lato server quando possibile: next_due_date è la scadenza della prossima rata non pagata.
-    if (args.payment_status === 'overdue') q.dateLt('next_due_date', today);
-    if (args.payment_status === 'not_paid' || args.payment_status === 'partially_paid')
-      q.raw('next_due_date is not null');
+    // Lato server si tengono solo i documenti con almeno una rata aperta (next_due_date valorizzata);
+    // la scadenza si valuta in locale su tutte le rate, senza assumere cosa sia esattamente next_due_date.
+    if (args.payment_status && args.payment_status !== 'paid') q.raw('next_due_date is not null');
     const spec = {
       operationId: 'listIssuedDocuments',
       path: LIST_PATH,
@@ -161,8 +160,13 @@ Lists issued documents (invoices, credit notes, quotes...) with filters, paginat
   },
 });
 
-function sums(docs: IssuedDocument[], today: string) {
+/** Somme in euro: i documenti in altre valute sono contati a parte, non sommati. */
+function sums(all: IssuedDocument[], today: string) {
+  const docs = all.filter((d) => !d.currency?.id || d.currency.id === 'EUR');
+  const foreign = all.length - docs.length;
   return {
+    currency: 'EUR',
+    excluded_other_currency_documents: foreign || undefined,
     amount_net: sumField(docs, (d) => d.amount_net),
     amount_vat: sumField(docs, (d) => d.amount_vat),
     amount_gross: sumField(docs, (d) => d.amount_gross),

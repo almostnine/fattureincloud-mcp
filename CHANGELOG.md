@@ -21,6 +21,12 @@ Prima versione, scritta da zero.
 - Modalità `readonly` (default), `write`, `full`; annotation MCP esplicite su tutti i tool.
 - Pacchetto `.mcpb` per Claude Desktop (un solo file JavaScript, nessuna dipendenza dalla versione di Node dell'utente) e pacchetto npm `fattureincloud-mcp-server`.
 
+### Sicurezza
+
+- Token di conferma monouso; conferma anche per conversioni che eliminano l'originale e per le modifiche ai dati di pagamento (IBAN).
+- Un indirizzo email scritto in Fatture in Cloud durante la sessione non è un destinatario ammesso.
+- Revisione di sicurezza e di correttezza indipendenti: esito e correzioni in `docs/REVIEW.md`.
+
 ### Differenze rispetto al progetto di riferimento (aringad/fattureincloud-mcp)
 
 - Aliquote IVA indicate per `id` e totali calcolati da Fatture in Cloud: corregge il bug di `duplicate_invoice` e la gestione del regime forfettario.
