@@ -17,8 +17,7 @@ const timer = setTimeout(() => {
 
 child.stdout.on('data', (d) => {
   buf += d;
-  let i;
-  while ((i = buf.indexOf('\n')) >= 0) {
+  for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
     const line = buf.slice(0, i);
     buf = buf.slice(i + 1);
     const msg = JSON.parse(line); // stdout deve contenere solo JSON-RPC

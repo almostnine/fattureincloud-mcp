@@ -42,5 +42,18 @@
         "noNonNullAssertion": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off",
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    }
+  ]
 }
