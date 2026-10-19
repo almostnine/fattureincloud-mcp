@@ -2,7 +2,7 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it-IT/1.1.0/) e il progetto usa il [versionamento semantico](https://semver.org/lang/it/).
 
-## [1.1.0] - non ancora rilasciata
+## [1.1.0] - 2026-10-19
 
 ### Aggiunto
 
