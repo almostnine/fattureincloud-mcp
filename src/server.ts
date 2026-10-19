@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
-import { modeAllows } from './config.js';
+import type { Config } from './config.js';
 import type { AppContext } from './context.js';
-import { runTool, type ToolDef } from './tools/define.js';
+import { isToolEnabled, runTool, type ToolDef } from './tools/define.js';
 import { ALL_TOOLS } from './tools/index.js';
 import { VERSION } from './version.js';
 
@@ -13,13 +13,28 @@ const INSTRUCTIONS = `Server MCP per Fatture in Cloud (API v2). Modalità attiva
 
 /** Tool registrati per la modalità attiva: quelli non ammessi non esistono proprio. */
 export function toolsForMode(app: AppContext): ToolDef[] {
-  return ALL_TOOLS.filter((t) => modeAllows(app.config.mode, t.minMode));
+  return ALL_TOOLS.filter((t) => isToolEnabled(app.config, t));
+}
+
+/** Nomi in FIC_EXTRA_TOOLS che non corrispondono a un tool di scrittura: vengono ignorati, con un avviso. */
+export function invalidExtraTools(config: Pick<Config, 'extraTools'>): string[] {
+  const writable = new Set(ALL_TOOLS.filter((t) => t.minMode === 'write').map((t) => t.name));
+  return config.extraTools.filter((n) => !writable.has(n));
 }
 
 export function createServer(app: AppContext): McpServer {
   const server = new McpServer(
     { name: 'fattureincloud-mcp-server', title: 'Fatture in Cloud MCP (non ufficiale)', version: VERSION },
-    { capabilities: { tools: {} }, instructions: INSTRUCTIONS.replace('{mode}', app.config.mode) },
+    {
+      capabilities: { tools: {} },
+      instructions: INSTRUCTIONS.replace(
+        '{mode}',
+        app.config.mode +
+          (app.config.extraTools.length
+            ? `, più i tool abilitati singolarmente: ${app.config.extraTools.join(', ')}`
+            : ''),
+      ),
+    },
   );
   for (const def of toolsForMode(app)) {
     server.registerTool(

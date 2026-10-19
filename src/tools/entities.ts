@@ -269,29 +269,90 @@ function cleanEntity(data: Record<string, unknown>, kind: 'client' | 'supplier')
   return out;
 }
 
+/** Cerca anagrafiche che sembrano la stessa persona o azienda: stessa P.IVA, codice fiscale, email o nome. */
+async function findDuplicates(
+  app: AppContext,
+  kind: 'client' | 'supplier',
+  data: Record<string, unknown>,
+): Promise<Entity[]> {
+  const alternatives: Q[] = [];
+  const vat =
+    typeof data.vat_number === 'string' ? data.vat_number.replace(/^IT/i, '').replace(/\s/g, '') : '';
+  if (vat && !vat.includes("'"))
+    alternatives.push(new Q().strEq('vat_number', vat), new Q().strEq('vat_number', `IT${vat}`));
+  const cf = typeof data.tax_code === 'string' ? data.tax_code.trim().toUpperCase() : '';
+  if (cf && !cf.includes("'")) alternatives.push(new Q().strEq('tax_code', cf));
+  const email = typeof data.email === 'string' ? data.email.trim() : '';
+  if (email && !email.includes("'")) alternatives.push(new Q().strEq('email', email));
+  const name = typeof data.name === 'string' ? data.name : '';
+  if (name) alternatives.push(new Q().textContains('name', name));
+  if (!alternatives.length) return [];
+  const p = PATHS[kind];
+  const page = await fetchPage<Entity>(
+    await app.api(),
+    {
+      operationId: p.listOp,
+      path: p.list,
+      query: { q: new Q().anyOf(...alternatives).build(), fieldset: 'detailed' },
+    },
+    1,
+    20,
+  );
+  const norm = (s: string | null | undefined) => (s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  // Il filtro per nome è "contiene": si tengono solo i nomi uguali, oltre alle corrispondenze esatte sugli altri campi.
+  return page.items.filter(
+    (e) =>
+      (vat && (e.vat_number ?? '').replace(/^IT/i, '') === vat) ||
+      (cf && (e.tax_code ?? '').toUpperCase() === cf) ||
+      (email && norm(e.email) === norm(email)) ||
+      (name && norm(entityName(e)) === norm(name)),
+  );
+}
+
 export const createEntity = defineTool({
   name: 'fic_create_entity',
   title: 'Crea cliente o fornitore',
-  description: `Crea un cliente (default) o un fornitore in anagrafica. Serve almeno il nome. Fatture in Cloud rifiuta i duplicati (stesso codice, partita IVA o codice fiscale, o stesso nome se è l'unico dato).
-Prima di creare, cerca con fic_search_entities per evitare doppioni.
-Creates a client or supplier.`,
+  description: `Crea un nuovo cliente (default) o fornitore nell'anagrafica di Fatture in Cloud. Serve almeno il nome; per fatturare a un privato servono di solito codice fiscale e indirizzo, per un'azienda partita IVA, indirizzo e codice destinatario SDI (ei_code) o PEC.
+Prima di creare, il tool cerca anagrafiche con la stessa partita IVA, codice fiscale, email o nome: se ne trova, non crea nulla e le restituisce. Mostrale all'utente; se conferma che è davvero un nuovo cliente, ripeti con allow_duplicate: true.
+Raccogli i dati dall'utente e riepilogali prima di creare: non inventare dati mancanti.
+Creates a client or supplier, checking for likely duplicates first.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   input: z.object({
     kind: kindSchema,
     ...entityFields,
     name: z.string().min(1).max(250).describe('Ragione sociale o nome completo.'),
+    allow_duplicate: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Crea anche se esistono anagrafiche simili: solo dopo che l’utente ha confermato che è un soggetto diverso.',
+      ),
   }),
-  operations: ['createClient', 'createSupplier'],
-  handler: async ({ kind, ...data }, app) => {
+  operations: ['listClients', 'listSuppliers', 'createClient', 'createSupplier'],
+  handler: async ({ kind, allow_duplicate, ...data }, app) => {
+    const body = cleanEntity(data, kind);
+    if (!allow_duplicate) {
+      const dups = await findDuplicates(app, kind, body);
+      if (dups.length) {
+        return {
+          kind,
+          created: false,
+          possible_duplicates: dups.map(entitySummary),
+          next_step:
+            'Esistono già anagrafiche con dati uguali: mostrale all’utente. Se è lo stesso soggetto usa quella esistente (eventualmente aggiornala con fic_update_entity); se è davvero nuovo, ripeti con allow_duplicate: true.',
+        };
+      }
+    }
     const client = await app.api();
     const p = PATHS[kind];
     const res = await client.request<DataResponse<Entity>>({
       operationId: p.createOp,
       method: 'POST',
       path: p.list,
-      body: { data: cleanEntity(data, kind) },
+      body: { data: body },
     });
+    app.cache.invalidate('entity:');
     app.log.audit('anagrafica creata', { kind, id: res?.data?.id });
     return { kind, created: true, ...entityDetail(res?.data ?? {}) };
   },

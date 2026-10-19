@@ -75,6 +75,7 @@ Shows the connected Fatture in Cloud account, accessible companies, active compa
       },
       companies: companies.map((c) => ({ id: c.id, name: c.name, plan: c.fic_plan })),
       server_mode: app.config.mode,
+      extra_tools: app.config.extraTools.length ? app.config.extraTools : undefined,
       server_version: VERSION,
       api_version: SPEC_VERSION,
     };

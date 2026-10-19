@@ -47,6 +47,7 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
         FIC_ACCESS_TOKEN: '${user_config.fic_access_token}',
         FIC_COMPANY_ID: '${user_config.fic_company_id}',
         FIC_MODE: '${user_config.fic_mode}',
+        FIC_EXTRA_TOOLS: '${user_config.fic_extra_tools}',
         FIC_DEFAULT_PAYMENT_ACCOUNT_ID: '${user_config.fic_default_payment_account_id}',
         FIC_EMAIL_ALLOWED_RECIPIENTS: '${user_config.fic_email_allowed_recipients}',
       },
@@ -91,6 +92,13 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
       description:
         'readonly (default, solo lettura), write (crea e modifica, cancella con conferma), full (anche invio SDI ed email, con conferma). Qualsiasi altro valore vale readonly.',
       default: 'readonly',
+      required: false,
+    },
+    fic_extra_tools: {
+      type: 'string',
+      title: 'Tool di scrittura abilitati singolarmente (facoltativo)',
+      description:
+        'Nomi separati da virgola, attivi anche in modalità readonly. Esempio: fic_create_entity per creare nuovi clienti. Gli invii (SDI, email) non si abilitano così. Il token deve avere il permesso di scrittura sulla risorsa.',
       required: false,
     },
     fic_default_payment_account_id: {

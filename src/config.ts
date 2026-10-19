@@ -11,6 +11,8 @@ export interface Config {
   mode: Mode;
   defaultPaymentAccountId: number | undefined;
   emailAllowedRecipients: string[];
+  /** Tool di scrittura abilitati singolarmente, in aggiunta a quelli della modalità (FIC_EXTRA_TOOLS). */
+  extraTools: string[];
   downloadDir: string;
   cache: CacheMode;
   cacheTtlSeconds: number;
@@ -74,6 +76,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       warnings,
     ),
     emailAllowedRecipients: recipients,
+    extraTools: (clean(env.FIC_EXTRA_TOOLS) ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
     downloadDir: clean(env.FIC_DOWNLOAD_DIR) ?? join(homedir(), 'Downloads', 'fattureincloud-mcp'),
     cache: oneOf('FIC_CACHE', env.FIC_CACHE, CACHE_MODES, 'memory', warnings),
     cacheTtlSeconds: positiveInt('FIC_CACHE_TTL_SECONDS', env.FIC_CACHE_TTL_SECONDS, warnings) ?? 86_400,

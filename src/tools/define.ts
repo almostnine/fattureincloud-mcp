@@ -1,7 +1,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 import { errorToText, FicError } from '../api/errors.js';
-import { type Mode, modeAllows } from '../config.js';
+import { type Config, type Mode, modeAllows } from '../config.js';
 import type { AppContext } from '../context.js';
 import { containsUntrusted, UNTRUSTED_NOTICE } from '../safety/untrusted.js';
 
@@ -78,6 +78,18 @@ function rememberEmails(value: unknown, into: Set<string>, depth = 0): void {
   }
 }
 
+/**
+ * Un tool è attivo se la modalità lo consente, oppure se è un tool di scrittura (non di invio) abilitato
+ * singolarmente con FIC_EXTRA_TOOLS. Gli invii (modalità full) non si abilitano mai uno per uno.
+ */
+export function isToolEnabled(
+  config: Pick<Config, 'mode' | 'extraTools'>,
+  def: Pick<ToolDef, 'name' | 'minMode'>,
+): boolean {
+  if (modeAllows(config.mode, def.minMode)) return true;
+  return def.minMode === 'write' && config.extraTools.includes(def.name);
+}
+
 /** Esegue l'handler con il doppio controllo di modalità e la traduzione degli errori. */
 export async function runTool<I extends z.ZodObject>(
   def: ToolDef<I>,
@@ -87,7 +99,7 @@ export async function runTool<I extends z.ZodObject>(
   let docType: string | undefined;
   try {
     docType = def.docTypeOf?.(args);
-    if (!modeAllows(app.config.mode, def.minMode)) {
+    if (!isToolEnabled(app.config, def)) {
       throw new FicError(
         'refused',
         `Il tool ${def.name} richiede la modalità ${def.minMode}; il server è in modalità ${app.config.mode}.`,

@@ -3,7 +3,7 @@
   "manifest_version": "0.3",
   "name": "fattureincloud-mcp-server",
   "display_name": "Fatture in Cloud MCP (non ufficiale)",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Fatture, rate, incassi, clienti e situazione di Fatture in Cloud dentro Claude. Sola lettura di default.",
   "long_description": "Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre tutte le 123 operazioni dell'API.\n\n- **Sola lettura di default**: in modalità `readonly` i tool di scrittura e di invio non esistono proprio.\n- **Modalità `write`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate, cancellazioni con anteprima e conferma.\n- **Modalità `full`**: anche invio allo SDI ed email, sempre con anteprima e token di conferma.\n- Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.\n\nNon affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: https://github.com/almostnine/fattureincloud-mcp",
   "author": {
@@ -30,6 +30,7 @@
         "FIC_ACCESS_TOKEN": "${user_config.fic_access_token}",
         "FIC_COMPANY_ID": "${user_config.fic_company_id}",
         "FIC_MODE": "${user_config.fic_mode}",
+        "FIC_EXTRA_TOOLS": "${user_config.fic_extra_tools}",
         "FIC_DEFAULT_PAYMENT_ACCOUNT_ID": "${user_config.fic_default_payment_account_id}",
         "FIC_EMAIL_ALLOWED_RECIPIENTS": "${user_config.fic_email_allowed_recipients}"
       }
@@ -110,7 +111,7 @@
     },
     {
       "name": "fic_create_entity",
-      "description": "Crea un cliente (default) o un fornitore in anagrafica (modalità write)."
+      "description": "Crea un nuovo cliente (default) o fornitore nell'anagrafica di Fatture in Cloud (modalità write)."
     },
     {
       "name": "fic_update_entity",
@@ -191,6 +192,12 @@
       "title": "Modalità",
       "description": "readonly (default, solo lettura), write (crea e modifica, cancella con conferma), full (anche invio SDI ed email, con conferma). Qualsiasi altro valore vale readonly.",
       "default": "readonly",
+      "required": false
+    },
+    "fic_extra_tools": {
+      "type": "string",
+      "title": "Tool di scrittura abilitati singolarmente (facoltativo)",
+      "description": "Nomi separati da virgola, attivi anche in modalità readonly. Esempio: fic_create_entity per creare nuovi clienti. Gli invii (SDI, email) non si abilitano così. Il token deve avere il permesso di scrittura sulla risorsa.",
       "required": false
     },
     "fic_default_payment_account_id": {

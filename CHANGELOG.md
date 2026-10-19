@@ -2,6 +2,14 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it-IT/1.1.0/) e il progetto usa il [versionamento semantico](https://semver.org/lang/it/).
 
+## [1.1.0] - non ancora rilasciata
+
+### Aggiunto
+
+- `FIC_EXTRA_TOOLS` (campo "Tool di scrittura abilitati singolarmente" in Claude Desktop): attiva singoli tool di scrittura restando in `readonly`, per esempio solo `fic_create_entity` per creare clienti. Gli invii non si attivano così.
+- `fic_create_entity` controlla i doppioni prima di creare (stessa partita IVA, codice fiscale, email o nome) e, se ne trova, li mostra invece di creare; `allow_duplicate: true` crea comunque dopo la conferma dell'utente.
+- `fic_account_info` riporta i tool abilitati singolarmente.
+
 ## [1.0.0] - 2026-10-17
 
 Prima versione, scritta da zero.

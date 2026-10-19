@@ -33,7 +33,7 @@ File generato da `scripts/gen-coverage.ts`: non modificare a mano.
 
 | Operazione | Metodo e percorso | Effetto | Modalità | Tool | Testata |
 |---|---|---|---|---|---|
-| `listClients` | GET `/entities/clients` | lettura | readonly | `fic_search_entities`, `fic_api_read` | sì |
+| `listClients` | GET `/entities/clients` | lettura | readonly | `fic_search_entities`, `fic_create_entity`, `fic_api_read` | sì |
 | `createClient` | POST `/entities/clients` | scrittura | write | `fic_create_entity`, `fic_api_write` | sì |
 | `deleteClient` | DELETE `/entities/clients/{client_id}` | cancellazione | write | `fic_delete` | sì |
 | `getClient` | GET `/entities/clients/{client_id}` | lettura | readonly | `fic_get_entity`, `fic_update_entity`, `fic_create_issued_document`, `fic_duplicate_issued_document`, `fic_delete`, `fic_send_email`, `fic_api_read` | sì |
@@ -180,7 +180,7 @@ File generato da `scripts/gen-coverage.ts`: non modificare a mano.
 
 | Operazione | Metodo e percorso | Effetto | Modalità | Tool | Testata |
 |---|---|---|---|---|---|
-| `listSuppliers` | GET `/entities/suppliers` | lettura | readonly | `fic_search_entities`, `fic_api_read` | sì |
+| `listSuppliers` | GET `/entities/suppliers` | lettura | readonly | `fic_search_entities`, `fic_create_entity`, `fic_api_read` | sì |
 | `createSupplier` | POST `/entities/suppliers` | scrittura | write | `fic_create_entity`, `fic_api_write` | sì |
 | `deleteSupplier` | DELETE `/entities/suppliers/{supplier_id}` | cancellazione | write | `fic_delete` | sì |
 | `getSupplier` | GET `/entities/suppliers/{supplier_id}` | lettura | readonly | `fic_get_entity`, `fic_update_entity`, `fic_delete`, `fic_api_read` | sì |

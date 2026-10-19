@@ -227,6 +227,7 @@ Note sulle annotation:
 | `full` | tutto, compresi invio SDI, email e webhook | come `write` (lo scope per l'invio SDI non è documentato: `issued_documents.invoices:a` è il candidato da verificare) |
 
 - Valore mancante o non riconosciuto di `FIC_MODE`: si parte in `readonly` e si scrive un avviso su stderr. Mai il contrario.
+- `FIC_EXTRA_TOOLS` (dalla 1.1.0) attiva singoli tool di modalità `write` in aggiunta a quelli della modalità, per esempio solo `fic_create_entity` in `readonly`. I tool di invio (`full`) non si attivano mai uno per uno; nomi sconosciuti vengono ignorati con un avviso.
 - Doppio controllo: i tool non ammessi non vengono registrati, e ogni handler verifica di nuovo la modalità prima di chiamare l'API. I tool generici controllano la classe di effetto della singola operazione.
 - La modalità del server non sostituisce gli scope del token: con un token `:r` anche la modalità `full` fallisce sulle scritture, con un messaggio che spiega quale scope manca.
 

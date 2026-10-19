@@ -49,9 +49,12 @@ describe('fic_search_entities e fic_get_entity', () => {
 
 describe('fic_create_entity e fic_update_entity', () => {
   it('crea un cliente togliendo le emoji dai testi', async () => {
-    const fic = new FakeFic().withCompany().on('POST', '/c/1001/entities/clients', (c) => ({
-      body: { data: { id: 600, ...(c.body as { data: object }).data } },
-    }));
+    const fic = new FakeFic()
+      .withCompany()
+      .on('GET', '/c/1001/entities/clients', { body: page([]) })
+      .on('POST', '/c/1001/entities/clients', (c) => ({
+        body: { data: { id: 600, ...(c.body as { data: object }).data } },
+      }));
     const { app } = testApp({ fic, mode: 'write' });
     const res = await call(await connect(app), 'fic_create_entity', {
       name: 'Nuovo Cliente 😀',

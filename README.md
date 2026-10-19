@@ -81,6 +81,15 @@ Il server usa un **token personale** (autenticazione manuale, https://developers
 
 La modalità del server e i permessi del token sono due protezioni indipendenti: con un token `:r` nessuna scrittura passa, qualunque sia la modalità.
 
+### Solo alcune scritture: per esempio creare clienti
+
+Se vuoi restare in sola lettura ma poter creare nuovi clienti:
+
+1. In Fatture in Cloud dai all'app l'**accesso completo** al solo modulo **Clienti** (scope `entity.clients:a`), lasciando gli altri in lettura.
+2. Lascia `FIC_MODE=readonly` e imposta `FIC_EXTRA_TOOLS=fic_create_entity`. In Claude Desktop è il campo "Tool di scrittura abilitati singolarmente".
+
+Claude vedrà i 17 tool di lettura più `fic_create_entity`. Prima di creare, il tool cerca anagrafiche con la stessa partita IVA, codice fiscale, email o nome e, se ne trova, te le mostra invece di creare un doppione. Per poter anche correggere i clienti aggiungi `fic_update_entity`.
+
 ## Configurazione
 
 | Variabile | Default | Descrizione |
@@ -88,6 +97,7 @@ La modalità del server e i permessi del token sono due protezioni indipendenti:
 | `FIC_ACCESS_TOKEN` | obbligatoria | token personale |
 | `FIC_COMPANY_ID` | | necessario solo se il token vede più aziende |
 | `FIC_MODE` | `readonly` | `readonly`, `write`, `full`; un valore non valido vale `readonly` |
+| `FIC_EXTRA_TOOLS` | | tool di scrittura da attivare singolarmente anche in `readonly`, separati da virgola (per esempio `fic_create_entity`); gli invii non si attivano così |
 | `FIC_DEFAULT_PAYMENT_ACCOUNT_ID` | | conto di saldo usato quando segni una rata pagata senza indicarlo |
 | `FIC_EMAIL_ALLOWED_RECIPIENTS` | | indirizzi extra ammessi per le email, separati da virgola |
 | `FIC_DOWNLOAD_DIR` | `~/Downloads/fattureincloud-mcp` | cartella dei file scaricati e, per gli allegati, di quelli da caricare |
