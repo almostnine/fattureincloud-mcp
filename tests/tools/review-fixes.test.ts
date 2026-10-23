@@ -132,7 +132,7 @@ describe('difese contro la manipolazione del modello', () => {
 
   it('non invia a un indirizzo appena scritto nell’anagrafica', async () => {
     const fic = emailFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     await previewAndRun(client, 'fic_update_entity', { id: 501, email: 'attaccante@example.org' });
     const res = await call(client, 'fic_send_email', { document_id: 5 });
@@ -142,7 +142,7 @@ describe('difese contro la manipolazione del modello', () => {
 
   it('un token di conferma vale una sola volta', async () => {
     const fic = emailFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_send_email', { document_id: 5 });
     const first = await call(client, 'fic_send_email', {

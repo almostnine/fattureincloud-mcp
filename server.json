@@ -3,7 +3,7 @@
   "name": "io.github.almostnine/fattureincloud-mcp",
   "title": "Fatture in Cloud MCP (non ufficiale)",
   "description": "Fatture in Cloud API v2: fatture, rate, incassi, clienti, situazione. Sola lettura di default.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "repository": {
     "url": "https://github.com/almostnine/fattureincloud-mcp",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "fattureincloud-mcp-server",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "transport": {
         "type": "stdio"
       },
@@ -51,14 +51,21 @@
           "isRequired": false,
           "format": "boolean",
           "default": "false"
+        },
+        {
+          "name": "FIC_ENABLE_SEND",
+          "description": "true per attivare invio SDI ed email in modalità full (default false)",
+          "isRequired": false,
+          "format": "boolean",
+          "default": "false"
         }
       ]
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/almostnine/fattureincloud-mcp/releases/download/v1.2.0/fattureincloud-mcp-server-1.2.0.mcpb",
-      "version": "1.2.0",
-      "fileSha256": "832e6843c3c5067027ea2cb0e5574409c77f094c1129b6c277dbd15118930838",
+      "identifier": "https://github.com/almostnine/fattureincloud-mcp/releases/download/v1.3.0/fattureincloud-mcp-server-1.3.0.mcpb",
+      "version": "1.3.0",
+      "fileSha256": "46875c5e4fa8824a784a860d25cadc2c89b2c72724e643371326788283083e62",
       "transport": {
         "type": "stdio"
       }

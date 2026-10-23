@@ -227,25 +227,106 @@ describe('fic_set_installment_status', () => {
     });
   });
 
-  it('rifiuta i documenti bloccati e le rate ambigue', async () => {
+  it('rifiuta le rate ambigue', async () => {
     const fic = new FakeFic()
       .withCompany()
-      .on('GET', '/c/1001/issued_documents/7', { body: { data: invoice({ id: 7, locked: true }) } })
       .on('GET', '/c/1001/issued_documents/8', { body: { data: invoice({ id: 8 }) } });
     const { app } = testApp({ fic, mode: 'write' });
-    const client = await connect(app);
-    const locked = await call(client, 'fic_set_installment_status', {
-      document_id: 7,
-      installment: 1,
-      status: 'not_paid',
-    });
-    expect(locked.text).toContain('bloccato');
-    const ambiguous = await call(client, 'fic_set_installment_status', {
+    const ambiguous = await call(await connect(app), 'fic_set_installment_status', {
       document_id: 8,
       status: 'not_paid',
     });
     expect(ambiguous.text).toContain('2 rate');
     expect(fic.calls.some((c) => c.method === 'PUT')).toBe(false);
+  });
+
+  it('su una fattura già inviata allo SDI cambia solo le rate e rilegge il documento', async () => {
+    const doc = invoice({ id: 7, locked: true });
+    const paid = invoice({
+      id: 7,
+      locked: true,
+      payments_list: [
+        { ...doc.payments_list![0]!, status: 'paid', paid_date: '2026-10-09', payment_account: { id: 3 } },
+        doc.payments_list![1]!,
+      ],
+    });
+    const fic = new FakeFic()
+      .withCompany()
+      // anteprima, esecuzione, verifica dopo la modifica
+      .on('GET', '/c/1001/issued_documents/7', [
+        { body: { data: doc } },
+        { body: { data: doc } },
+        { body: { data: paid } },
+      ])
+      .on('GET', '/c/1001/info/payment_accounts', ACCOUNTS)
+      .on('PUT', '/c/1001/issued_documents/7', { body: { data: paid } });
+    const { app, dialogs } = testApp({ fic, mode: 'write' });
+    const { preview, done } = await previewAndRun(await connect(app), 'fic_set_installment_status', {
+      document_id: 7,
+      installment: 1,
+      status: 'paid',
+      paid_date: '2026-10-09',
+      payment_account_id: 3,
+    });
+    expect(preview.data).toMatchObject({ locked: true });
+    expect(String(preview.data.note)).toContain('già inviata allo SDI');
+    expect(dialogs[0]).toContain('si cambiano solo le rate');
+    expect(done.isError, done.text).toBe(false);
+    expect(done.data).toMatchObject({ updated: true, after: { status: 'paid' } });
+    expect(done.data.warnings).toBeUndefined();
+    const put = fic.calls.find((c) => c.method === 'PUT')!;
+    expect(Object.keys((put.body as { data: object }).data).sort()).toEqual(['payments_list', 'type']);
+    expect(fic.callsTo('/c/1001/issued_documents/7').filter((c) => c.method === 'GET')).toHaveLength(3);
+  });
+
+  it('segnala se dopo la modifica è cambiato altro o la rata non risulta pagata', async () => {
+    const doc = invoice({ id: 7, locked: true });
+    const changed = invoice({ id: 7, locked: true, amount_gross: 700, ei_status: 'sent' });
+    const fic = new FakeFic()
+      .withCompany()
+      .on('GET', '/c/1001/issued_documents/7', [
+        { body: { data: doc } },
+        { body: { data: doc } },
+        { body: { data: changed } },
+      ])
+      .on('GET', '/c/1001/info/payment_accounts', ACCOUNTS)
+      .on('PUT', '/c/1001/issued_documents/7', { body: { data: changed } });
+    const { app } = testApp({ fic, mode: 'write' });
+    const { done } = await previewAndRun(await connect(app), 'fic_set_installment_status', {
+      document_id: 7,
+      installment: 1,
+      status: 'paid',
+      paid_date: '2026-10-09',
+      payment_account_id: 3,
+    });
+    expect(done.isError, done.text).toBe(false);
+    const warnings = (done.data.warnings as string[]).join(' ');
+    expect(warnings).toContain('amount_gross: 602 -> 700');
+    expect(warnings).toContain('ei_status');
+    expect(warnings).toContain('La rata 1 risulta not_paid');
+  });
+
+  it('se Fatture in Cloud rifiuta la modifica di una fattura inviata, dice di usare il pannello', async () => {
+    const doc = invoice({ id: 7, locked: true });
+    const fic = new FakeFic()
+      .withCompany()
+      .on('GET', '/c/1001/issued_documents/7', { body: { data: doc } })
+      .on('GET', '/c/1001/info/payment_accounts', ACCOUNTS)
+      .on('PUT', '/c/1001/issued_documents/7', {
+        status: 422,
+        body: { error: { message: 'Il documento è bloccato' } },
+      });
+    const { app } = testApp({ fic, mode: 'write' });
+    const { done } = await previewAndRun(await connect(app), 'fic_set_installment_status', {
+      document_id: 7,
+      installment: 1,
+      status: 'paid',
+      paid_date: '2026-10-09',
+      payment_account_id: 3,
+    });
+    expect(done.isError).toBe(true);
+    expect(done.text).toContain('non consente di cambiare le rate di questa fattura via API');
+    expect(done.text).toContain('pannello');
   });
 });
 

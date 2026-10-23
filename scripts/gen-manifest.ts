@@ -27,7 +27,7 @@ const manifest = {
 
 - **Sola lettura di default**: in modalità \`readonly\` i tool di scrittura e di invio non esistono proprio.
 - **Modalità \`write\`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate. Ogni scrittura parte da un'anteprima e si esegue solo dopo la tua conferma, chiesta direttamente a te (elicitation di Claude Desktop o finestra di macOS): Claude non può darla al posto tuo. Cancellazioni solo se le attivi.
-- **Modalità \`full\`**: anche invio allo SDI ed email, con la stessa conferma.
+- **Modalità \`full\`**: anche invio allo SDI ed email, con la stessa conferma, solo se attivi gli invii (spenti di default: le fatture si inviano dal pannello di Fatture in Cloud).
 - **Mai IBAN**: il server non invia coordinate bancarie a Fatture in Cloud; i documenti usano solo il metodo di pagamento configurato.
 - Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.
 
@@ -50,6 +50,7 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
         FIC_MODE: '${user_config.fic_mode}',
         FIC_CONFIRM_METHOD: '${user_config.fic_confirm_method}',
         FIC_ENABLE_DELETE: '${user_config.fic_enable_delete}',
+        FIC_ENABLE_SEND: '${user_config.fic_enable_send}',
         FIC_DEFAULT_PAYMENT_ACCOUNT_ID: '${user_config.fic_default_payment_account_id}',
         FIC_EMAIL_ALLOWED_RECIPIENTS: '${user_config.fic_email_allowed_recipients}',
       },
@@ -92,7 +93,7 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
       type: 'string',
       title: 'Modalità',
       description:
-        'readonly (default, solo lettura), write (crea e modifica, ogni scrittura con la tua conferma), full (anche invio SDI ed email, con la tua conferma). Qualsiasi altro valore vale readonly.',
+        'readonly (default, solo lettura), write (crea e modifica, ogni scrittura con la tua conferma), full (anche invio SDI ed email, con la tua conferma e solo se attivi gli invii). Qualsiasi altro valore vale readonly.',
       default: 'readonly',
       required: false,
     },
@@ -109,6 +110,14 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
       title: 'Consenti le cancellazioni',
       description:
         'Attiva fic_delete (solo in modalità write o full), sempre con anteprima e la tua conferma. Spento di default.',
+      default: false,
+      required: false,
+    },
+    fic_enable_send: {
+      type: 'boolean',
+      title: 'Consenti gli invii allo SDI e per email',
+      description:
+        'Attiva fic_send_einvoice e fic_send_email (solo in modalità full), sempre con anteprima e la tua conferma. Spento di default: senza, il server non invia nessun documento e la fattura si invia dal pannello.',
       default: false,
       required: false,
     },
@@ -185,6 +194,13 @@ const server = {
         {
           name: 'FIC_ENABLE_DELETE',
           description: 'true per attivare fic_delete (default false)',
+          isRequired: false,
+          format: 'boolean',
+          default: 'false',
+        },
+        {
+          name: 'FIC_ENABLE_SEND',
+          description: 'true per attivare invio SDI ed email in modalità full (default false)',
           isRequired: false,
           format: 'boolean',
           default: 'false',

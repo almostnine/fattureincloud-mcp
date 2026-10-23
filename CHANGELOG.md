@@ -2,6 +2,24 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it-IT/1.1.0/) e il progetto usa il [versionamento semantico](https://semver.org/lang/it/).
 
+## [1.3.0] - 2026-10-23
+
+Crea fatture e aggiorna i pagamenti delle rate in modalità `write`, senza mai inviare: l'invio allo SDI si fa dal pannello di Fatture in Cloud.
+
+### Sicurezza
+
+- **Invii spenti di default**: `fic_send_einvoice` e `fic_send_email` esistono solo in modalità `full` con la nuova variabile `FIC_ENABLE_SEND=true`. Senza, anche il client HTTP rifiuta ogni operazione di invio (per operationId o per percorso), qualunque tool la chieda, compreso `fic_api_write`. In `full` senza `FIC_ENABLE_SEND` il server lo segnala nei log; `check` e `fic_account_info` dicono se gli invii sono accesi.
+
+### Aggiunto
+
+- `fic_create_issued_document`: rivalsa in percentuale (`rivalsa`, default quella predefinita dell'azienda) e tipo cassa della fattura elettronica (`ei_cassa_type`, per esempio TC22 per la rivalsa INPS); le righe concorrono alla rivalsa (`apply_withholding_taxes`, default sì con la rivalsa). Rivalsa e cassa compaiono nell'anteprima e nella conferma.
+- Avviso sul bollo nei documenti senza IVA: se manca sopra 77,47 euro o se c'è sotto.
+
+### Cambiato
+
+- `fic_set_installment_status` funziona anche sulle fatture già inviate allo SDI (bloccate): cambia solo le rate, lo dice nell'anteprima e nella conferma, rilegge il documento dopo la modifica e avvisa se sono cambiati totale, stato SDI, numero, data o righe, o se la rata non ha lo stato chiesto. Se Fatture in Cloud rifiuta la modifica, il messaggio dice di segnare la rata dal pannello. Il comportamento dell'API sui documenti bloccati non è ancora verificato su un account reale.
+- Dopo la creazione di una fattura elettronica, con gli invii spenti il passo successivo indicato è l'invio dal pannello.
+
 ## [1.2.0] - 2026-10-23
 
 Versione di sicurezza: nessuna scrittura senza una conferma umana che il modello non può dare, e nessun IBAN inviato a Fatture in Cloud.

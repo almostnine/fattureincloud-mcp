@@ -322,7 +322,11 @@ Runs a create or update Fatture in Cloud API operation by operationId, after pre
     const op = findOp(args.operation_id);
     if (op.effect === 'read') throw refused(`${op.id} è una lettura: usa fic_api_read.`);
     if (op.effect === 'send')
-      throw refused(`Gli invii passano solo da ${SEND_TOOL[op.id]}, con anteprima e conferma.`);
+      throw refused(
+        app.config.enableSend
+          ? `Gli invii passano solo da ${SEND_TOOL[op.id]}, con anteprima e conferma.`
+          : 'Gli invii allo SDI e per email sono spenti (FIC_ENABLE_SEND): la fattura si invia dal pannello di Fatture in Cloud.',
+      );
     if (op.effect === 'delete' || op.effect === 'delete_permanent')
       throw refused('Le cancellazioni passano solo da fic_delete, con anteprima e conferma.');
     if (op.effect === 'external' && app.config.mode !== 'full') {

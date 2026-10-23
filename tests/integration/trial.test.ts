@@ -20,6 +20,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
   const config = {
     ...loadConfig({ FIC_ACCESS_TOKEN: token, FIC_COMPANY_ID: String(companyId) }),
     mode: 'full' as const,
+    enableSend: true,
     cache: 'off' as const,
     enableDelete: true,
   };

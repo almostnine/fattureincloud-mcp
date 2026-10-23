@@ -61,11 +61,30 @@ describe('modalità', () => {
   it.each([
     ['readonly', READ_TOOLS],
     ['write', [...READ_TOOLS, ...WRITE_TOOLS]],
-    ['full', [...READ_TOOLS, ...WRITE_TOOLS, ...SEND_TOOLS]],
+    ['full', [...READ_TOOLS, ...WRITE_TOOLS]],
   ] as const)('in %s espone esattamente i tool previsti', async (mode, expected) => {
     const { app } = testApp({ mode });
     const tools = (await (await connect(app)).listTools()).tools;
     expect(tools.map((t) => t.name).sort()).toEqual([...expected].sort());
+  });
+
+  it('gli invii esistono solo in full con FIC_ENABLE_SEND=true', async () => {
+    for (const [mode, enableSend, present] of [
+      ['full', true, true],
+      ['full', false, false],
+      ['write', true, false],
+      ['readonly', true, false],
+    ] as const) {
+      const { app } = testApp({ mode, config: { enableSend } });
+      const names = (await (await connect(app)).listTools()).tools.map((t) => t.name);
+      for (const name of SEND_TOOLS)
+        expect(names.includes(name), `${mode} ${enableSend} ${name}`).toBe(present);
+    }
+    expect(loadConfig({ FIC_ENABLE_SEND: 'true' }).enableSend).toBe(true);
+    expect(loadConfig({ FIC_ENABLE_SEND: 'si' }).enableSend).toBe(false);
+    expect(loadConfig({}).enableSend).toBe(false);
+    expect(loadConfig({ FIC_MODE: 'full' }).warnings.join(' ')).toContain('FIC_ENABLE_SEND');
+    expect(loadConfig({ FIC_MODE: 'full', FIC_ENABLE_SEND: '1' }).warnings).toEqual([]);
   });
 
   it('fic_delete esiste solo con FIC_ENABLE_DELETE=true, e mai in readonly', async () => {
@@ -94,7 +113,7 @@ describe('modalità', () => {
   });
 
   it('ogni tool ha titolo, descrizione e le quattro annotation attese', async () => {
-    const { app } = testApp({ mode: 'full', config: { enableDelete: true } });
+    const { app } = testApp({ mode: 'full', config: { enableDelete: true, enableSend: true } });
     const tools = (await (await connect(app)).listTools()).tools;
     expect(tools).toHaveLength(Object.keys(EXPECTED).length);
     for (const t of tools) {
@@ -195,7 +214,16 @@ describe('fic_api_catalog e fic_api_read', () => {
 
 describe('fic_api_write', () => {
   it('blocca invii e cancellazioni', async () => {
-    const { app } = testApp({ mode: 'full' });
+    const spento = await connect(testApp({ mode: 'full' }).app);
+    expect(
+      (
+        await call(spento, 'fic_api_write', {
+          operation_id: 'sendEInvoice',
+          path_params: { document_id: 1 },
+        })
+      ).text,
+    ).toContain('pannello di Fatture in Cloud');
+    const { app } = testApp({ mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     expect(
       (

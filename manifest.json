@@ -3,9 +3,9 @@
   "manifest_version": "0.3",
   "name": "fattureincloud-mcp-server",
   "display_name": "Fatture in Cloud MCP (non ufficiale)",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Fatture, rate, incassi, clienti e situazione di Fatture in Cloud dentro Claude. Sola lettura di default.",
-  "long_description": "Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre 117 delle 123 operazioni dell'API (conti di saldo, metodi di pagamento e recupero dal cestino restano solo nell'app web).\n\n- **Sola lettura di default**: in modalità `readonly` i tool di scrittura e di invio non esistono proprio.\n- **Modalità `write`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate. Ogni scrittura parte da un'anteprima e si esegue solo dopo la tua conferma, chiesta direttamente a te (elicitation di Claude Desktop o finestra di macOS): Claude non può darla al posto tuo. Cancellazioni solo se le attivi.\n- **Modalità `full`**: anche invio allo SDI ed email, con la stessa conferma.\n- **Mai IBAN**: il server non invia coordinate bancarie a Fatture in Cloud; i documenti usano solo il metodo di pagamento configurato.\n- Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.\n\nNon affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: https://github.com/almostnine/fattureincloud-mcp",
+  "long_description": "Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre 117 delle 123 operazioni dell'API (conti di saldo, metodi di pagamento e recupero dal cestino restano solo nell'app web).\n\n- **Sola lettura di default**: in modalità `readonly` i tool di scrittura e di invio non esistono proprio.\n- **Modalità `write`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate. Ogni scrittura parte da un'anteprima e si esegue solo dopo la tua conferma, chiesta direttamente a te (elicitation di Claude Desktop o finestra di macOS): Claude non può darla al posto tuo. Cancellazioni solo se le attivi.\n- **Modalità `full`**: anche invio allo SDI ed email, con la stessa conferma, solo se attivi gli invii (spenti di default: le fatture si inviano dal pannello di Fatture in Cloud).\n- **Mai IBAN**: il server non invia coordinate bancarie a Fatture in Cloud; i documenti usano solo il metodo di pagamento configurato.\n- Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.\n\nNon affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: https://github.com/almostnine/fattureincloud-mcp",
   "author": {
     "name": "Marco Di Santo",
     "url": "https://github.com/almostnine"
@@ -32,6 +32,7 @@
         "FIC_MODE": "${user_config.fic_mode}",
         "FIC_CONFIRM_METHOD": "${user_config.fic_confirm_method}",
         "FIC_ENABLE_DELETE": "${user_config.fic_enable_delete}",
+        "FIC_ENABLE_SEND": "${user_config.fic_enable_send}",
         "FIC_DEFAULT_PAYMENT_ACCOUNT_ID": "${user_config.fic_default_payment_account_id}",
         "FIC_EMAIL_ALLOWED_RECIPIENTS": "${user_config.fic_email_allowed_recipients}"
       }
@@ -191,7 +192,7 @@
     "fic_mode": {
       "type": "string",
       "title": "Modalità",
-      "description": "readonly (default, solo lettura), write (crea e modifica, ogni scrittura con la tua conferma), full (anche invio SDI ed email, con la tua conferma). Qualsiasi altro valore vale readonly.",
+      "description": "readonly (default, solo lettura), write (crea e modifica, ogni scrittura con la tua conferma), full (anche invio SDI ed email, con la tua conferma e solo se attivi gli invii). Qualsiasi altro valore vale readonly.",
       "default": "readonly",
       "required": false
     },
@@ -206,6 +207,13 @@
       "type": "boolean",
       "title": "Consenti le cancellazioni",
       "description": "Attiva fic_delete (solo in modalità write o full), sempre con anteprima e la tua conferma. Spento di default.",
+      "default": false,
+      "required": false
+    },
+    "fic_enable_send": {
+      "type": "boolean",
+      "title": "Consenti gli invii allo SDI e per email",
+      "description": "Attiva fic_send_einvoice e fic_send_email (solo in modalità full), sempre con anteprima e la tua conferma. Spento di default: senza, il server non invia nessun documento e la fattura si invia dal pannello.",
       "default": false,
       "required": false
     },

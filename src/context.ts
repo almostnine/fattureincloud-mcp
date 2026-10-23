@@ -76,6 +76,7 @@ export class AppContext {
           logger: opts.log,
           ...(opts.fetch ? { fetch: opts.fetch } : {}),
           ...(opts.sleep ? { sleep: opts.sleep } : {}),
+          allowSend: opts.config.enableSend,
         })
       : undefined;
   }

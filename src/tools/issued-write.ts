@@ -35,6 +35,7 @@ interface Totals {
   amount_due?: number;
   stamp_duty?: number;
   amount_withholding_tax?: number;
+  amount_rivalsa?: number;
   payments_sum?: number;
 }
 
@@ -42,6 +43,7 @@ interface PreCreateInfo {
   default_values?: {
     payment_method?: { id?: number; ei_payment_method?: string | null } | null;
     use_gross_prices?: boolean | null;
+    rivalsa?: number | null;
   };
   items_default_values?: { vat?: { id?: number | null } | null };
 }
@@ -76,7 +78,14 @@ const itemSchema = z.object({
     .boolean()
     .optional()
     .describe('Riga fuori campo IVA (per esempio il bollo addebitato al cliente).'),
+  apply_withholding_taxes: z
+    .boolean()
+    .optional()
+    .describe('La riga concorre a rivalsa, cassa e ritenute. Default: sì se il documento ha la rivalsa.'),
 });
+
+/** Soglia oltre la quale una fattura senza IVA paga il bollo di 2 euro (art. 13 Tariffa DPR 642/1972). */
+export const STAMP_DUTY_THRESHOLD = 77.47;
 
 const installmentSchema = z.object({ due_date: isoDate, amount: z.number().positive().optional() });
 
@@ -112,6 +121,7 @@ function buildItems(
   items: z.infer<typeof itemSchema>[],
   defaultVat: number | undefined,
   gross: boolean,
+  withRivalsa = false,
 ): Item[] {
   return items.map((it, i) => {
     const vat = it.vat_id ?? defaultVat;
@@ -135,8 +145,29 @@ function buildItems(
       vat: { id: vat },
       ...(it.discount ? { discount: it.discount } : {}),
       ...(it.not_taxable ? { not_taxable: true } : {}),
+      ...((it.apply_withholding_taxes ?? withRivalsa) ? { apply_withholding_taxes: true } : {}),
     };
   });
+}
+
+/**
+ * Avvisi sul bollo per i documenti senza IVA: 2 euro solo se l'importo supera 77,47 euro. Il server non lo
+ * aggiunge né lo toglie da solo: lo segnala nell'anteprima.
+ */
+export function stampDutyWarnings(type: string, doc: IssuedDocument, t: Totals): string[] {
+  if (!['invoice', 'credit_note'].includes(type) || (t.amount_vat ?? 0) !== 0 || t.amount_gross === undefined)
+    return [];
+  const base = t.amount_gross;
+  const stamp = doc.stamp_duty ?? 0;
+  if (!stamp && base > STAMP_DUTY_THRESHOLD)
+    return [
+      `Documento senza IVA sopra ${STAMP_DUTY_THRESHOLD} euro (${base}) senza bollo: di solito serve il bollo di 2 euro (stamp_duty: 2).`,
+    ];
+  if (stamp && base <= STAMP_DUTY_THRESHOLD)
+    return [
+      `Bollo di ${stamp} euro su un documento senza IVA di ${base} euro: sotto ${STAMP_DUTY_THRESHOLD} euro il bollo non è dovuto.`,
+    ];
+  return [];
 }
 
 function totalsView(t: Totals) {
@@ -146,6 +177,7 @@ function totalsView(t: Totals) {
     amount_gross: t.amount_gross,
     stamp_duty: t.stamp_duty || undefined,
     amount_withholding_tax: t.amount_withholding_tax || undefined,
+    amount_rivalsa: t.amount_rivalsa || undefined,
     amount_due: t.amount_due,
   };
 }
@@ -190,6 +222,9 @@ function docSummary(
       ? `ID ${doc.payment_method.id} (coordinate dal metodo configurato in Fatture in Cloud)`
       : undefined,
     modalita_sdi: (doc.ei_data as { payment_method?: string } | undefined)?.payment_method,
+    rivalsa: doc.rivalsa
+      ? `${doc.rivalsa}%${doc.ei_cassa_type ? ` (cassa ${doc.ei_cassa_type})` : ''}`
+      : undefined,
     oggetto: doc.visible_subject,
     oggetto_interno: doc.subject,
     note: doc.notes,
@@ -201,6 +236,7 @@ function docSummary(
       imponibile: t.amount_net,
       iva: t.amount_vat,
       totale: t.amount_gross,
+      rivalsa: t.amount_rivalsa || undefined,
       bollo: t.stamp_duty || undefined,
       ritenuta: t.amount_withholding_tax || undefined,
       da_pagare: t.amount_due,
@@ -238,10 +274,11 @@ export const createIssuedDocument = defineTool({
   name: 'fic_create_issued_document',
   title: 'Crea documento emesso',
   description: `Crea una fattura, nota di credito, proforma, preventivo, ordine, DDT o altro documento emesso per un cliente esistente. Totali e IVA li calcola Fatture in Cloud; le rate si indicano con installments (scadenze ed eventuali importi) oppure con installments_count e payment_terms_days.
-Il documento nasce come bozza in Fatture in Cloud: non viene inviato allo SDI né per email (servono fic_send_einvoice e fic_send_email, in modalità full).
+Il documento nasce come bozza in Fatture in Cloud: non viene inviato allo SDI né per email: l'invio si fa dal pannello di Fatture in Cloud (fic_send_einvoice e fic_send_email esistono solo in modalità full con FIC_ENABLE_SEND=true).
 Prima chiamata (dry_run default true): anteprima con totali e rate e un token, senza creare nulla. Mostrala all'utente; per creare ripeti con gli stessi parametri, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente, senza la quale non crea nulla.
 Coordinate bancarie: il documento usa solo il metodo di pagamento (payment_method_id) configurato in Fatture in Cloud; un IBAN in note, oggetto o righe viene rifiutato.
 Aliquote: indica vat_id (elenco con fic_reference_data, list "vat_types"); se manca si usa l'aliquota predefinita del cliente o dell'azienda (per un forfettario è di solito l'aliquota a zero con natura N2.2).
+Rivalsa: con rivalsa (per esempio 4 per la rivalsa INPS) ed ei_cassa_type (TC22) le righe concorrono alla rivalsa; senza rivalsa si usa quella predefinita dell'azienda, se c'è. Bollo: sui documenti senza IVA l'anteprima avvisa se manca sopra 77,47 euro o se c'è sotto.
 Creates an issued document: preview first, then token plus out-of-band human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -301,6 +338,19 @@ Creates an issued document: preview first, then token plus out-of-band human con
       .describe(
         'Bollo (per esempio 2). Sulle fatture elettroniche è a carico dell’emittente: per addebitarlo al cliente aggiungi una riga non imponibile.',
       ),
+    rivalsa: z
+      .number()
+      .min(0)
+      .max(100)
+      .optional()
+      .describe(
+        'Rivalsa in percentuale (per esempio 4 per la rivalsa INPS). Default: quella predefinita dell’azienda in Fatture in Cloud, se c’è.',
+      ),
+    ei_cassa_type: z
+      .string()
+      .regex(/^TC\d{2}$/)
+      .optional()
+      .describe('Tipo cassa della fattura elettronica per la rivalsa (TC22 per la rivalsa INPS).'),
     related_invoice_number: z
       .string()
       .max(20)
@@ -334,6 +384,7 @@ Creates an issued document: preview first, then token plus out-of-band human con
       info.default_values?.payment_method?.id ??
       undefined;
     const notesOut: string[] = [];
+    const rivalsa = args.rivalsa ?? info.default_values?.rivalsa ?? undefined;
 
     const doc: IssuedDocument = {
       type: args.type,
@@ -347,10 +398,18 @@ Creates an issued document: preview first, then token plus out-of-band human con
       ...(args.revenue_center ? { rc_center: args.revenue_center } : {}),
       ...(args.stamp_duty !== undefined ? { stamp_duty: args.stamp_duty } : {}),
       ...(paymentMethodId ? { payment_method: { id: paymentMethodId } } : {}),
+      ...(rivalsa ? { rivalsa } : {}),
+      ...(rivalsa && args.ei_cassa_type ? { ei_cassa_type: args.ei_cassa_type } : {}),
       use_gross_prices: gross,
       e_invoice: eInvoice,
-      items_list: buildItems(args.items, defaultVat ?? undefined, gross),
+      items_list: buildItems(args.items, defaultVat ?? undefined, gross, Boolean(rivalsa)),
     };
+    if (rivalsa && args.rivalsa === undefined)
+      notesOut.push(`Rivalsa del ${rivalsa}% presa dai valori predefiniti dell’azienda in Fatture in Cloud.`);
+    if (rivalsa && eInvoice && !args.ei_cassa_type)
+      notesOut.push(
+        'Rivalsa senza tipo cassa per la fattura elettronica: indica ei_cassa_type (TC22 per la rivalsa INPS).',
+      );
     if (eInvoice) {
       const mp =
         args.ei_payment_method ?? info.default_values?.payment_method?.ei_payment_method ?? undefined;
@@ -367,6 +426,7 @@ Creates an issued document: preview first, then token plus out-of-band human con
     }
 
     const t = await totals(app, doc);
+    notesOut.push(...stampDutyWarnings(args.type, doc, t));
     if (hasPayments(args.type) && t.amount_due !== undefined && t.amount_due !== null) {
       const endOfMonth = args.end_of_month ?? entity.default_payment_terms_type === 'end_of_month';
       const terms = {
@@ -395,7 +455,10 @@ Creates an issued document: preview first, then token plus out-of-band human con
       id: `new-${args.type}`,
       state: '',
       params: doc,
-      prompt: humanPrompt(`Crea ${label(args.type)}`, docSummary(doc, t)),
+      prompt: humanPrompt(
+        `Crea ${label(args.type)}`,
+        docSummary(doc, t, notesOut.length ? { avvisi: notesOut.join(' ') } : {}),
+      ),
     };
     if (args.dry_run || !args.confirm)
       return { dry_run: true, created: false, preview, ...previewFields(app, call, pending, EXECUTE_HINT) };
@@ -407,7 +470,9 @@ Creates an issued document: preview first, then token plus out-of-band human con
       document: issuedSummary(created, todayRome(app.now())),
       preview,
       next_step: eInvoice
-        ? 'Bozza creata. Per inviarla allo SDI serve fic_send_einvoice (modalità full), dopo la conferma dell’utente.'
+        ? app.config.enableSend
+          ? 'Bozza creata. Per inviarla allo SDI serve fic_send_einvoice, dopo la conferma dell’utente.'
+          : 'Bozza creata, non inviata. L’invio allo SDI si fa dal pannello di Fatture in Cloud.'
         : 'Bozza creata.',
     };
   },

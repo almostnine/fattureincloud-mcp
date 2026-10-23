@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { refused } from '../api/errors.js';
+import { FicError, refused } from '../api/errors.js';
 import { fetchAll } from '../api/paginate.js';
+import type { AppContext } from '../context.js';
 import { isoDate, todayRome } from '../domain/dates.js';
 import { displayNumber, entityName, paymentSummary } from '../domain/documents.js';
 import { groupByClient, installmentRows } from '../domain/installments.js';
@@ -151,10 +152,61 @@ function pickInstallment(
   );
 }
 
+/** Risposte con cui Fatture in Cloud rifiuta una modifica (400, 409, 422): non errori di rete, scope o quota. */
+const LOCKED_REFUSALS = new Set(['validation', 'conflict', 'bad_request']);
+
+const LOCKED_NOTE =
+  'fattura già inviata allo SDI: si cambiano solo le rate; se Fatture in Cloud rifiuta, va fatto dal pannello';
+
+/** Valore confrontabile delle righe: nome, quantità, prezzi e aliquota. */
+function itemsKey(doc: IssuedDocument): string {
+  return JSON.stringify(
+    (doc.items_list ?? []).map((it) => [it.name, it.qty, it.net_price, it.gross_price, it.vat?.id ?? null]),
+  );
+}
+
+/**
+ * Rilegge il documento dopo la modifica (getIssuedDocument, senza cache): totale, stato SDI, numero, data e
+ * righe devono essere quelli di prima, e la rata deve avere lo stato chiesto. Ogni differenza è un avviso.
+ */
+async function verifyAfter(
+  app: AppContext,
+  documentId: number,
+  before: IssuedDocument,
+  idx: number,
+  expected: PaymentItem,
+): Promise<string[]> {
+  let now: IssuedDocument;
+  try {
+    now = await getIssued(app, documentId);
+  } catch {
+    return ['Non sono riuscito a rileggere il documento dopo la modifica: controlla le rate nel pannello.'];
+  }
+  const warnings: string[] = [];
+  for (const key of ['amount_gross', 'ei_status', 'number', 'date'] as const) {
+    if ((before[key] ?? null) !== (now[key] ?? null))
+      warnings.push(`Dopo la modifica è cambiato anche ${key}: ${before[key] ?? '-'} -> ${now[key] ?? '-'}.`);
+  }
+  if (itemsKey(before) !== itemsKey(now))
+    warnings.push('Dopo la modifica sono cambiate anche le righe del documento.');
+  const rata = now.payments_list?.[idx];
+  if (!rata) warnings.push(`Dopo la modifica la rata ${idx + 1} non c’è più.`);
+  else if (
+    (rata.status ?? 'not_paid') !== expected.status ||
+    (expected.status === 'paid' &&
+      (rata.paid_date !== expected.paid_date || rata.payment_account?.id !== expected.payment_account?.id))
+  )
+    warnings.push(
+      `La rata ${idx + 1} risulta ${rata.status ?? 'not_paid'}${rata.paid_date ? ` il ${rata.paid_date}` : ''}, attesa ${expected.status}${expected.paid_date ? ` il ${expected.paid_date}` : ''}: controlla nel pannello.`,
+    );
+  return warnings;
+}
+
 export const setInstallmentStatus = defineTool({
   name: 'fic_set_installment_status',
   title: 'Segna rata pagata o non pagata',
   description: `Segna una rata di un documento emesso come pagata (con conto di saldo e data di pagamento) oppure come non pagata. Tocca solo quella rata: importi, scadenze e altre rate restano invariati.
+Funziona anche sulle fatture già inviate allo SDI (bloccate): lì cambiano solo le rate, e se Fatture in Cloud non lo consente via API la rata si segna dal pannello. Dopo la modifica il server rilegge il documento e segnala se è cambiato altro.
 Il conto di saldo è obbligatorio per "pagata": indicalo con payment_account_id (elenco con fic_reference_data, list "payment_accounts") oppure configura FIC_DEFAULT_PAYMENT_ACCOUNT_ID. Il server non sceglie mai un conto da solo.
 Esempio: "segna pagata la seconda rata della fattura 33/2026, bonifico del 10 ottobre su Banca" -> recupera l'ID con fic_get_issued_document, poi {document_id, installment:2, status:"paid", paid_date:"2026-10-10", payment_account_id}.
 Prima chiamata (dry_run default true): anteprima prima/dopo e token. Per registrare: stessi parametri con dry_run: false e confirm; il server chiede allora la conferma direttamente all'utente.
@@ -180,11 +232,9 @@ Marks one installment as paid (with payment account and date) or unpaid, after p
   operations: ['getIssuedDocument', 'modifyIssuedDocument', 'listPaymentAccounts'],
   handler: async (args, app, call) => {
     const doc = await getIssued(app, args.document_id);
-    if (doc.locked) {
-      throw refused(
-        'Il documento è bloccato in Fatture in Cloud (di solito perché già inviato allo SDI): lo stato delle rate va cambiato dall’app web.',
-      );
-    }
+    // Nel pannello i pagamenti di una fattura già inviata allo SDI restano modificabili; via API non è
+    // verificato, quindi si prova cambiando solo le rate e si rilegge il documento dopo la modifica.
+    const locked = Boolean(doc.locked);
     const list = [...(doc.payments_list ?? [])];
     if (!list.length) throw refused('Il documento non ha rate da aggiornare.');
     const idx = pickInstallment(list, args);
@@ -243,6 +293,7 @@ Marks one installment as paid (with payment account and date) or unpaid, after p
           args.status === 'paid'
             ? `pagata il ${updated.paid_date} sul conto ${account!.name ?? ''} (ID ${account!.id})`
             : 'non pagata (conto e data di pagamento tolti)',
+        ...(locked ? { attenzione: LOCKED_NOTE } : {}),
       }),
     };
     const beforeView = {
@@ -262,18 +313,29 @@ Marks one installment as paid (with payment account and date) or unpaid, after p
           paid_date: updated.paid_date ?? undefined,
           payment_account: account ? { id: account.id, name: account.name } : undefined,
         },
+        ...(locked ? { locked: true, note: LOCKED_NOTE } : {}),
         ...previewFields(app, call, pending, 'dry_run: false e confirm uguale a confirm_token'),
       };
     }
     await authorize(app, call, args.confirm, pending);
     const client = await app.api();
-    const res = await client.request<DataResponse<IssuedDocument>>({
-      operationId: 'modifyIssuedDocument',
-      method: 'PUT',
-      path: '/c/{company_id}/issued_documents/{document_id}',
-      pathParams: { document_id: args.document_id },
-      body: { data: { type: doc.type, payments_list } },
-    });
+    let res: DataResponse<IssuedDocument>;
+    try {
+      res = await client.request<DataResponse<IssuedDocument>>({
+        operationId: 'modifyIssuedDocument',
+        method: 'PUT',
+        path: '/c/{company_id}/issued_documents/{document_id}',
+        pathParams: { document_id: args.document_id },
+        body: { data: { type: doc.type, payments_list } },
+      });
+    } catch (err) {
+      // Su una fattura già inviata un rifiuto di Fatture in Cloud (4xx) vuol dire che via API non si può.
+      if (locked && err instanceof FicError && LOCKED_REFUSALS.has(err.kind))
+        throw refused(
+          `Fatture in Cloud non consente di cambiare le rate di questa fattura via API: segnala pagata dal pannello. (${err.message})`,
+        );
+      throw err;
+    }
     app.cache.invalidate('issued:');
     app.log.audit('rata aggiornata', {
       document_id: args.document_id,
@@ -281,8 +343,10 @@ Marks one installment as paid (with payment account and date) or unpaid, after p
       status: args.status,
     });
     const after = res?.data?.payments_list?.[idx];
+    const warnings = await verifyAfter(app, args.document_id, doc, idx, updated);
     return {
       updated: true,
+      ...(warnings.length ? { warnings } : {}),
       document_id: args.document_id,
       installment: idx + 1,
       before: beforeView,

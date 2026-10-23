@@ -14,7 +14,7 @@ Server [MCP](https://modelcontextprotocol.io) per [Fatture in Cloud](https://www
 - "Situazione dell'anno, mese per mese"
 - "Ecco i movimenti dell'estratto conto di settembre: quali bonifici corrispondono a rate aperte?"
 - Con la modalità `write`: "segna pagata la seconda rata della fattura 33/2026, bonifico del 10 ottobre", "duplica la fattura 41 con data di oggi sostituendo settembre con ottobre", "converti la proforma 12 in fattura"
-- Con la modalità `full`: "invia la fattura 35 allo SDI", "manda al cliente la copia di cortesia"
+- Con la modalità `full` e `FIC_ENABLE_SEND=true`: "invia la fattura 35 allo SDI", "manda al cliente la copia di cortesia"
 
 ## Installazione
 
@@ -30,7 +30,7 @@ Serve Node.js 20 o superiore solo per l'uso da riga di comando: Claude Desktop h
 ### Riga di comando (Linux, macOS, Windows)
 
 ```bash
-FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.2.0
+FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.3.0
 ```
 
 Oppure dal codice sorgente:
@@ -51,7 +51,7 @@ Verifica rapida della configurazione: `FIC_ACCESS_TOKEN=... node dist/index.js c
   "mcpServers": {
     "fattureincloud": {
       "command": "npx",
-      "args": ["-y", "fattureincloud-mcp-server@1.2.0"],
+      "args": ["-y", "fattureincloud-mcp-server@1.3.0"],
       "env": {
         "FIC_ACCESS_TOKEN": "il-tuo-token",
         "FIC_MODE": "readonly"
@@ -77,9 +77,11 @@ Il server usa un **token personale** (autenticazione manuale, https://developers
 |---|---|---|
 | `readonly` (default) | solo lettura | `:r` su `issued_documents.*` che usi (almeno `invoices` e `credit_notes`), `entity.clients`, `entity.suppliers`, `received_documents`, `cashbook`, `settings`, più `products`, `receipts`, `taxes`, `archive`, `emails` se ti servono |
 | `write` | anche crea, modifica, segna rate pagate, ognuna con anteprima e conferma umana; cancella solo con `FIC_ENABLE_DELETE=true` | `:a` sulle risorse da modificare (per esempio `issued_documents.invoices:a`, `entity.clients:a`) |
-| `full` | anche invio allo SDI, email e webhook, con conferma | come `write`; l'invio SDI richiede un piano a pagamento con fatturazione elettronica attiva |
+| `full` | anche webhook e, solo con `FIC_ENABLE_SEND=true`, invio allo SDI ed email, con conferma | come `write`; l'invio SDI richiede un piano a pagamento con fatturazione elettronica attiva |
 
 La modalità del server e i permessi del token sono due protezioni indipendenti: con un token `:r` nessuna scrittura passa, qualunque sia la modalità.
+
+Attenzione: lo scope `issued_documents.invoices:a` serve per creare fatture e segnare le rate pagate, ma permette tecnicamente anche l'invio allo SDI. Fatture in Cloud non distingue i due permessi: il blocco degli invii è nel server (`FIC_ENABLE_SEND` spento di default).
 
 ### Come si conferma una scrittura
 
@@ -105,6 +107,7 @@ Il token lega la conferma al corpo esatto mostrato nell'anteprima: se qualcosa c
 | `FIC_MODE` | `readonly` | `readonly`, `write`, `full`; un valore non valido vale `readonly` |
 | `FIC_CONFIRM_METHOD` | `auto` | conferma umana delle scritture: `auto` (elicitation se il client la supporta, altrimenti finestra di dialogo su macOS), `elicitation`, `dialog` |
 | `FIC_ENABLE_DELETE` | `false` | `true` registra `fic_delete` (solo in `write` o `full`) |
+| `FIC_ENABLE_SEND` | `false` | `true` registra `fic_send_einvoice` e `fic_send_email` (solo in `full`); senza, il server rifiuta ogni invio anche a livello HTTP |
 | `FIC_EXTRA_TOOLS` | | dalla 1.2.0 senza effetto: in `readonly` non abilita più nessuna scrittura (resta solo un avviso nei log) |
 | `FIC_DEFAULT_PAYMENT_ACCOUNT_ID` | | conto di saldo usato quando segni una rata pagata senza indicarlo |
 | `FIC_EMAIL_ALLOWED_RECIPIENTS` | | indirizzi extra ammessi per le email, separati da virgola |
@@ -140,16 +143,16 @@ Il token lega la conferma al corpo esatto mostrato nell'anteprima: se qualcosa c
 
 | Tool | A cosa serve |
 |---|---|
-| `fic_set_installment_status` | segna una rata pagata (conto e data) o non pagata |
+| `fic_set_installment_status` | segna una rata pagata (conto e data) o non pagata; sulle fatture già inviate allo SDI cambia solo le rate e rilegge il documento per verificare che non sia cambiato altro (se Fatture in Cloud non lo consente via API, si fa dal pannello) |
 | `fic_create_entity`, `fic_update_entity` | crea o modifica clienti e fornitori |
-| `fic_create_issued_document` | crea fatture e altri documenti, con anteprima dei totali (`dry_run`, default `true`) |
+| `fic_create_issued_document` | crea fatture e altri documenti, senza inviarli, con anteprima dei totali (`dry_run`, default `true`); rivalsa (`rivalsa`, `ei_cassa_type` come TC22) e avviso sul bollo sopra 77,47 euro nei documenti senza IVA |
 | `fic_update_issued_document` | modifica un documento preservando le rate pagate |
 | `fic_convert_issued_document` | proforma in fattura, preventivo in ordine... |
 | `fic_duplicate_issued_document` | duplica con nuova data e sostituzioni di testo |
 | `fic_delete` | cancella qualsiasi elemento, con anteprima e conferma; esiste solo con `FIC_ENABLE_DELETE=true` |
 | `fic_api_write` | altre scritture dell'API (prodotti, corrispettivi, F24, archivio, prima nota, aliquote, allegati); mai documenti emessi, cancellazioni, recupero dal cestino, conti e metodi di pagamento |
 
-**Invio** (`FIC_MODE=full`)
+**Invio** (`FIC_MODE=full` e `FIC_ENABLE_SEND=true`)
 
 | Tool | A cosa serve |
 |---|---|
@@ -163,6 +166,7 @@ L'elenco completo delle operazioni API e del tool che le espone è in [docs/COVE
 - **Sola lettura di default**: in `readonly` i tool di scrittura e di invio non vengono registrati.
 - **Ogni scrittura e ogni azione irreversibile** (documenti, rate, anagrafiche, scritture generiche, invio SDI, email, cancellazioni, webhook) parte da un'anteprima e si esegue solo dopo la tua **conferma fuori banda** (elicitation di Claude Desktop o finestra di macOS), che Claude non può dare al posto tuo. Il token dell'anteprima è legato al corpo esatto, vale una volta e scade dopo 10 minuti, ma da solo non basta.
 - **Mai IBAN**: nessun corpo con coordinate bancarie esce dal server; i documenti usano solo il metodo di pagamento configurato.
+- **Invii spenti di default**: `fic_send_einvoice` e `fic_send_email` esistono solo in `full` con `FIC_ENABLE_SEND=true`; senza, il client HTTP rifiuta qualsiasi invio allo SDI o per email, da qualunque tool.
 - **Cancellazioni spente di default**: `fic_delete` esiste solo con `FIC_ENABLE_DELETE=true`.
 - **In Claude Desktop non scegliere "consenti sempre"** per i tool di invio e di cancellazione: così l'ultima parola resta a te.
 - **Email solo verso gli indirizzi del cliente** in anagrafica o configurati: difesa contro istruzioni nascoste nei documenti dei fornitori.
@@ -218,7 +222,7 @@ An [MCP](https://modelcontextprotocol.io) server for [Fatture in Cloud](https://
 ## Installation
 
 - **Claude Desktop**: download the `.mcpb` from [Releases](https://github.com/almostnine/fattureincloud-mcp/releases), double-click it, paste your Fatture in Cloud token (stored in the OS keychain), keep the mode on `readonly`.
-- **Command line** (Node.js 20+): `FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.2.0`, or build from source with `npm ci --ignore-scripts && npm run build && node dist/index.js`.
+- **Command line** (Node.js 20+): `FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.3.0`, or build from source with `npm ci --ignore-scripts && npm run build && node dist/index.js`.
 - **Manual client config**: see the JSON example above (`command`, `args`, `env`).
 
 ## Token
@@ -231,7 +235,7 @@ Create a private app in Fatture in Cloud (**Settings > Developer > New app**, ad
 |---|---|---|
 | `readonly` (default) | 17 read tools | write and send tools are not registered at all |
 | `write` | + 8 tools (+ `fic_delete` with `FIC_ENABLE_DELETE=true`) | create and update documents and contacts, mark installments paid |
-| `full` | + 2 tools | SDI e-invoice sending and email |
+| `full` | + 2 tools with `FIC_ENABLE_SEND=true` | SDI e-invoice sending and email (off by default) |
 
 Every write is two-step: the tool first returns a preview (`dry_run` defaults to `true`) and a token; when called again with the token, the server asks **you** directly, through MCP elicitation in Claude Desktop or, if the client lacks it, a native macOS dialog ("Annulla" is the default button). The model cannot answer that prompt. Without a human channel the write is refused. Choose the channel with `FIC_CONFIRM_METHOD` (`auto`, `elicitation`, `dialog`).
 
@@ -239,7 +243,7 @@ Configuration variables, the tool list and known limitations are in the Italian 
 
 ## Security
 
-Read-only by default; every write needs an out-of-band human confirmation, and the preview token (bound to the exact payload, single use, 10-minute expiry) is never enough on its own; the server never sends IBANs or other bank details (documents only reference the configured payment method); deletions are off unless `FIC_ENABLE_DELETE=true`; email only to the client's own addresses; text coming from Fatture in Cloud is delimited and treated as data; no telemetry; one host only; the token never appears in logs. Do not pick "always allow" in Claude Desktop for send and delete tools. See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
+Read-only by default; every write needs an out-of-band human confirmation, and the preview token (bound to the exact payload, single use, 10-minute expiry) is never enough on its own; the server never sends IBANs or other bank details (documents only reference the configured payment method); deletions are off unless `FIC_ENABLE_DELETE=true`; sending to SDI and by email is off unless `FIC_ENABLE_SEND=true`, blocked at the HTTP client too; email only to the client's own addresses; text coming from Fatture in Cloud is delimited and treated as data; no telemetry; one host only; the token never appears in logs. Do not pick "always allow" in Claude Desktop for send and delete tools. See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
 
 ## License
 

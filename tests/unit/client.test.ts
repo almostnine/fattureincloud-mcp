@@ -267,3 +267,47 @@ describe('paginazione', () => {
     expect(all.total).toBe(5);
   });
 });
+
+describe('invii bloccati nel client HTTP', () => {
+  const sends = [
+    {
+      operationId: 'sendEInvoice',
+      method: 'POST' as const,
+      path: '/c/{company_id}/issued_documents/{document_id}/e_invoice/send',
+    },
+    {
+      operationId: 'scheduleEmail',
+      method: 'POST' as const,
+      path: '/c/{company_id}/issued_documents/{document_id}/email',
+    },
+    // percorso di invio con un operationId che non lo dice: si riconosce dal percorso
+    {
+      operationId: 'modifyIssuedDocument',
+      method: 'POST' as const,
+      path: '/c/{company_id}/issued_documents/{document_id}/e_invoice/send',
+    },
+  ];
+
+  it.each(sends)('senza allowSend rifiuta $operationId prima di chiamare la rete', async (spec) => {
+    const fic = new FakeFic().on('POST', /.*/, { body: { data: {} } });
+    const err = await makeClient(fic)
+      .request({ ...spec, pathParams: { document_id: 7 }, body: { data: {} } })
+      .then(unexpected, asFic);
+    expect(err.kind).toBe('refused');
+    expect(err.message).toContain('pannello di Fatture in Cloud');
+    expect(fic.calls).toHaveLength(0);
+  });
+
+  it('con allowSend l’invio parte', async () => {
+    const fic = new FakeFic().on('POST', '/c/1001/issued_documents/7/e_invoice/send', { body: { data: {} } });
+    const client = new FicClient({
+      token: 'a/token-di-prova-0123456789',
+      logger: silentLogger,
+      fetch: fic.fetch,
+      allowSend: true,
+    });
+    client.setCompanyId(1001);
+    await client.request({ ...sends[0]!, pathParams: { document_id: 7 } });
+    expect(fic.calls).toHaveLength(1);
+  });
+});

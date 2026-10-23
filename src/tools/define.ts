@@ -1,5 +1,6 @@
 import type { CallToolResult, InputRequiredResult } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
+import { catalogOperation } from '../api/client.js';
 import { errorToText, FicError } from '../api/errors.js';
 import { type Config, type Mode, modeAllows } from '../config.js';
 import type { AppContext } from '../context.js';
@@ -99,15 +100,22 @@ export const EXTRA_TOOLS_ALLOWLIST: readonly string[] = [
   'fic_convert_issued_document',
 ];
 
+/** Vero se il tool chiama un'operazione di invio (SDI, email): dal catalogo, non dal nome. */
+export function isSendTool(def: Pick<ToolDef, 'operations'>): boolean {
+  return def.operations.some((id) => catalogOperation(id)?.effect === 'send');
+}
+
 /**
- * Un tool è attivo se la modalità lo consente. fic_delete richiede in più FIC_ENABLE_DELETE=true.
- * FIC_EXTRA_TOOLS non abilita più nulla (vedi EXTRA_TOOLS_ALLOWLIST).
+ * Un tool è attivo se la modalità lo consente. fic_delete richiede in più FIC_ENABLE_DELETE=true, gli invii
+ * (fic_send_einvoice, fic_send_email) FIC_ENABLE_SEND=true. FIC_EXTRA_TOOLS non abilita più nulla (vedi
+ * EXTRA_TOOLS_ALLOWLIST).
  */
 export function isToolEnabled(
-  config: Pick<Config, 'mode' | 'enableDelete'>,
-  def: Pick<ToolDef, 'name' | 'minMode'>,
+  config: Pick<Config, 'mode' | 'enableDelete' | 'enableSend'>,
+  def: Pick<ToolDef, 'name' | 'minMode' | 'operations'>,
 ): boolean {
   if (def.name === 'fic_delete' && !config.enableDelete) return false;
+  if (isSendTool(def) && !config.enableSend) return false;
   return modeAllows(config.mode, def.minMode);
 }
 
@@ -124,7 +132,9 @@ export async function runTool<I extends z.ZodObject>(
     if (!isToolEnabled(app.config, def)) {
       throw new FicError(
         'refused',
-        `Il tool ${def.name} richiede la modalità ${def.minMode}; il server è in modalità ${app.config.mode}.`,
+        isSendTool(def) && !app.config.enableSend
+          ? `Il tool ${def.name} è spento: gli invii richiedono FIC_ENABLE_SEND=true. La fattura si invia dal pannello di Fatture in Cloud.`
+          : `Il tool ${def.name} richiede la modalità ${def.minMode}; il server è in modalità ${app.config.mode}.`,
       );
     }
     if (def.minMode === 'write') rememberEmails(args, app.sessionEmails);

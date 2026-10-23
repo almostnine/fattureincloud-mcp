@@ -77,6 +77,7 @@ Shows the connected Fatture in Cloud account, accessible companies, active compa
       server_mode: app.config.mode,
       confirm_method: app.config.mode === 'readonly' ? undefined : app.config.confirmMethod,
       delete_enabled: app.config.mode === 'readonly' ? undefined : app.config.enableDelete,
+      send_enabled: app.config.mode === 'full' ? app.config.enableSend : undefined,
       server_version: VERSION,
       api_version: SPEC_VERSION,
     };

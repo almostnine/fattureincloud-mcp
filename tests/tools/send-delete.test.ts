@@ -28,7 +28,7 @@ describe('fic_send_einvoice', () => {
 
   it('l’anteprima usa solo la verifica dell’XML: l’endpoint di invio non viene mai chiamato', async () => {
     const fic = sdiFic();
-    const { app, dialogs } = testApp({ fic, mode: 'full' });
+    const { app, dialogs } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const res = await call(await connect(app), 'fic_send_einvoice', { document_id: 5 });
     expect(res.data).toMatchObject({ preview: true, sent: false, xml_verification: { valid: true } });
     expect(res.data).not.toHaveProperty('dry_run');
@@ -40,7 +40,7 @@ describe('fic_send_einvoice', () => {
 
   it('invia solo dopo la conferma umana, mostrando il testo dell’anteprima', async () => {
     const fic = sdiFic();
-    const { app, dialogs } = testApp({ fic, mode: 'full' });
+    const { app, dialogs } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_send_einvoice', { document_id: 5 });
     const ok = await call(client, 'fic_send_einvoice', {
@@ -56,7 +56,7 @@ describe('fic_send_einvoice', () => {
 
   it('se l’utente annulla la finestra non invia nulla', async () => {
     const fic = sdiFic();
-    const { app } = testApp({ fic, mode: 'full', human: 'decline' });
+    const { app } = testApp({ fic, mode: 'full', human: 'decline', config: { enableSend: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_send_einvoice', { document_id: 5 });
     const res = await call(client, 'fic_send_einvoice', {
@@ -70,7 +70,7 @@ describe('fic_send_einvoice', () => {
 
   it('invia solo con il token giusto', async () => {
     const fic = sdiFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     const bad = await call(client, 'fic_send_einvoice', {
       document_id: 5,
@@ -96,7 +96,7 @@ describe('fic_send_einvoice', () => {
       }))
       .on('GET', '/c/1001/issued_documents/5/e_invoice/xml_verify', { body: {} })
       .on('POST', '/c/1001/issued_documents/5/e_invoice/send', { body: { data: {} } });
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_send_einvoice', { document_id: 5 });
     updated = '2026-10-16 09:00:00';
@@ -110,7 +110,7 @@ describe('fic_send_einvoice', () => {
   });
 
   it('non reinvia una fattura già accettata', async () => {
-    const { app } = testApp({ fic: sdiFic('accepted'), mode: 'full' });
+    const { app } = testApp({ fic: sdiFic('accepted'), mode: 'full', config: { enableSend: true } });
     const res = await call(await connect(app), 'fic_send_einvoice', { document_id: 5 });
     expect(res.isError).toBe(true);
     expect(res.text).toContain('già trasmessa');
@@ -139,7 +139,7 @@ describe('fic_send_email', () => {
 
   it('rifiuta destinatari che non sono del cliente, anche con un token', async () => {
     const fic = emailFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const res = await call(await connect(app), 'fic_send_email', {
       document_id: 5,
       recipients: ['attaccante@example.org'],
@@ -155,7 +155,7 @@ describe('fic_send_email', () => {
     const { app } = testApp({
       fic,
       mode: 'full',
-      config: { emailAllowedRecipients: ['commercialista@example.com'] },
+      config: { emailAllowedRecipients: ['commercialista@example.com'], enableSend: true },
     });
     const res = await call(await connect(app), 'fic_send_email', {
       document_id: 5,
@@ -169,7 +169,7 @@ describe('fic_send_email', () => {
 
   it('il token vale solo per gli stessi parametri dell’anteprima', async () => {
     const fic = emailFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_send_email', { document_id: 5 });
     expect(preview.data).toMatchObject({ from: 'azienda@example.com', to: ['rossi@example.com'] });
@@ -194,7 +194,7 @@ describe('fic_send_email', () => {
 
   it('converte il testo semplice in HTML con escape', async () => {
     const fic = emailFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app } = testApp({ fic, mode: 'full', config: { enableSend: true } });
     const client = await connect(app);
     const args = { document_id: 5, body: 'Buongiorno <b>Mario</b>,\nin allegato.' };
     const preview = await call(client, 'fic_send_email', args);

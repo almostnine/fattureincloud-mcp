@@ -55,6 +55,8 @@ export interface FicClientOptions {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   now?: () => number;
+  /** Invii allo SDI e per email (operazioni `send` del catalogo): solo con FIC_ENABLE_SEND=true. Default: no. */
+  allowSend?: boolean;
 }
 
 /**
@@ -94,6 +96,17 @@ const OPS_BY_ID = new Map<string, CatalogOperation>(OPERATIONS.map((o) => [o.id,
 
 export function catalogOperation(id: string): CatalogOperation | undefined {
   return OPS_BY_ID.get(id);
+}
+
+/** Percorsi delle operazioni di invio (e_invoice/send, email): riconosciuti anche con un operationId diverso. */
+const SEND_PATHS = OPERATIONS.filter((o) => o.effect === 'send').map(
+  (o) => new RegExp(`^${o.path.replace(/\{[a-z_]+\}/g, '[^/]+')}$`),
+);
+
+/** Vero se la richiesta è un invio allo SDI o per email, per operationId o per percorso. */
+export function isSendRequest(spec: Pick<RequestSpec, 'operationId' | 'method' | 'path'>): boolean {
+  if (OPS_BY_ID.get(spec.operationId)?.effect === 'send') return true;
+  return spec.method === 'POST' && SEND_PATHS.some((re) => re.test(spec.path));
 }
 
 function parseRetryAfter(value: string | null): number | undefined {
@@ -144,6 +157,7 @@ export class FicClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
   private readonly now: () => number;
+  private readonly allowSend: boolean;
   private readonly buckets = new Map<string, TokenBucket>();
   private queue: Promise<unknown> = Promise.resolve();
   private companyIdValue: number | undefined;
@@ -156,6 +170,7 @@ export class FicClient {
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.random = opts.random ?? Math.random;
     this.now = opts.now ?? Date.now;
+    this.allowSend = opts.allowSend ?? false;
   }
 
   setCompanyId(id: number): void {
@@ -176,6 +191,15 @@ export class FicClient {
 
   private async execute<T>(spec: RequestSpec): Promise<T> {
     const op = OPS_BY_ID.get(spec.operationId);
+    // Difesa in profondità: senza FIC_ENABLE_SEND nessun invio allo SDI o per email parte, qualunque tool lo chieda.
+    if (!this.allowSend && isSendRequest(spec)) {
+      this.log.warn('invio bloccato', { op: spec.operationId });
+      throw new FicError(
+        'refused',
+        'Invio allo SDI o per email bloccato: il server non invia documenti (serve FIC_ENABLE_SEND=true). La fattura si invia dal pannello di Fatture in Cloud.',
+        { operationId: spec.operationId },
+      );
+    }
     const params: Record<string, string | number> = { ...(spec.pathParams ?? {}) };
     if (spec.path.includes('{company_id}')) {
       if (this.companyIdValue === undefined) {

@@ -35,7 +35,7 @@ export async function runCli(args: string[]): Promise<number> {
     try {
       const company = await app.activeCompany();
       process.stdout.write(
-        `OK: azienda ${company.id} (${company.name}), piano ${company.fic_plan ?? 'n/d'}, modalità ${config.mode}.\n`,
+        `OK: azienda ${company.id} (${company.name}), piano ${company.fic_plan ?? 'n/d'}, modalità ${config.mode}, invii allo SDI e per email ${config.enableSend ? 'accesi' : 'spenti'}.\n`,
       );
       return 0;
     } catch (err) {

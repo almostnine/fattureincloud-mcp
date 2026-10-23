@@ -51,7 +51,7 @@ export const ALL_TOOLS: ToolDef<any>[] = [
   duplicateIssuedDocument,
   deleteResource,
   apiWrite,
-  // invio (modalità full)
+  // invio (modalità full e FIC_ENABLE_SEND=true)
   sendEInvoice,
   sendEmail,
 ];

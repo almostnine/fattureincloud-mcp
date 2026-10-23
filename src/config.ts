@@ -21,6 +21,11 @@ export interface Config {
   confirmMethod: ConfirmMethod;
   /** fic_delete esiste solo con FIC_ENABLE_DELETE=true, oltre alla modalità write o full. */
   enableDelete: boolean;
+  /**
+   * Invii allo SDI e per email (fic_send_einvoice, fic_send_email) solo con FIC_ENABLE_SEND=true, oltre alla
+   * modalità full. Senza, il client HTTP rifiuta ogni operazione di invio, qualunque tool la chieda.
+   */
+  enableSend: boolean;
   downloadDir: string;
   /** Giorni dopo i quali i file scaricati dal server vengono cancellati all'avvio; undefined: mai. */
   downloadRetentionDays: number | undefined;
@@ -72,6 +77,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const warnings: string[] = [];
   // Modalità: qualsiasi valore non riconosciuto ricade su readonly, mai il contrario.
   const mode = oneOf('FIC_MODE', env.FIC_MODE, MODES, 'readonly', warnings);
+  // Come per le cancellazioni: solo "true" (o "1") accende gli invii.
+  const enableSend = ['true', '1'].includes(clean(env.FIC_ENABLE_SEND)?.toLowerCase() ?? '');
+  if (mode === 'full' && !enableSend)
+    warnings.push(
+      'FIC_MODE=full senza FIC_ENABLE_SEND=true: invii allo SDI e per email spenti. Le fatture si inviano dal pannello di Fatture in Cloud.',
+    );
   const recipients = (clean(env.FIC_EMAIL_ALLOWED_RECIPIENTS) ?? '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
@@ -94,6 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     confirmMethod: oneOf('FIC_CONFIRM_METHOD', env.FIC_CONFIRM_METHOD, CONFIRM_METHODS, 'auto', warnings),
     // Solo "true" (o "1") abilita le cancellazioni: qualsiasi altro valore le lascia spente.
     enableDelete: ['true', '1'].includes(clean(env.FIC_ENABLE_DELETE)?.toLowerCase() ?? ''),
+    enableSend,
     downloadDir: clean(env.FIC_DOWNLOAD_DIR) ?? join(homedir(), 'Downloads', 'fattureincloud-mcp'),
     downloadRetentionDays: positiveInt(
       'FIC_DOWNLOAD_RETENTION_DAYS',

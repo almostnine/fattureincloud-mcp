@@ -132,6 +132,128 @@ describe('fic_create_issued_document', () => {
     );
   });
 
+  it('crea la fattura con rivalsa INPS e tipo cassa, come quelle di un forfettario', async () => {
+    const fic = new FakeFic()
+      .withCompany()
+      .on('GET', '/c/1001/entities/clients/501', { body: { data: { ...CLIENT_ROSSI, e_invoice: true } } })
+      .on('GET', '/c/1001/issued_documents/info', PRECREATE)
+      // totali come l'API: rivalsa sulle righe che vi concorrono, nessuna IVA (aliquota forfettaria)
+      .on('POST', '/c/1001/issued_documents/totals', (c) => {
+        const d = (
+          c.body as {
+            data: {
+              rivalsa?: number;
+              items_list: Array<{ net_price: number; apply_withholding_taxes?: boolean }>;
+            };
+          }
+        ).data;
+        const net = d.items_list.reduce((s, it) => s + it.net_price, 0);
+        const base = d.items_list
+          .filter((it) => it.apply_withholding_taxes)
+          .reduce((s, it) => s + it.net_price, 0);
+        const rivalsa = Math.round(base * (d.rivalsa ?? 0)) / 100;
+        const gross = Math.round((net + rivalsa) * 100) / 100;
+        return {
+          body: {
+            data: {
+              amount_net: net,
+              amount_rivalsa: rivalsa,
+              amount_vat: 0,
+              amount_gross: gross,
+              amount_due: gross,
+            },
+          },
+        };
+      })
+      .on('POST', '/c/1001/issued_documents', (c) => ({
+        body: { data: { ...(c.body as { data: object }).data, id: 9998, number: 39 } },
+      }));
+    const { app, dialogs } = testApp({ fic, mode: 'write' });
+    const { preview, done } = await previewAndRun(await connect(app), 'fic_create_issued_document', {
+      client_id: 501,
+      date: '2026-10-22',
+      items: [{ name: 'Consulenza Educare Con Cura', net_price: 1778.85, vat_id: 66 }],
+      rivalsa: 4,
+      ei_cassa_type: 'TC22',
+      stamp_duty: 2,
+      ei_payment_method: 'MP05',
+    });
+    expect(preview.data.preview).toMatchObject({ totals: { amount_rivalsa: 71.15, amount_gross: 1850 } });
+    expect((preview.data.preview as { notes?: string[] }).notes).toBeUndefined();
+    expect(dialogs[0]).toContain('rivalsa: 4% (cassa TC22)');
+    expect(done.isError, done.text).toBe(false);
+    const post = fic.calls.find((c) => c.method === 'POST' && c.path === '/c/1001/issued_documents')!;
+    const data = (post.body as { data: Record<string, unknown> }).data;
+    expect(data).toMatchObject({ rivalsa: 4, ei_cassa_type: 'TC22', stamp_duty: 2, use_gross_prices: false });
+    expect(data.items_list).toEqual([
+      {
+        name: 'Consulenza Educare Con Cura',
+        qty: 1,
+        net_price: 1778.85,
+        vat: { id: 66 },
+        apply_withholding_taxes: true,
+      },
+    ]);
+    expect(done.data.next_step).toContain('pannello di Fatture in Cloud');
+  });
+
+  it('usa la rivalsa predefinita dell’azienda e chiede il tipo cassa', async () => {
+    const fic = withTotals(
+      new FakeFic()
+        .withCompany()
+        .on('GET', '/c/1001/entities/clients/501', { body: { data: { ...CLIENT_ROSSI, e_invoice: true } } })
+        .on('GET', '/c/1001/issued_documents/info', {
+          body: {
+            data: {
+              ...PRECREATE.body.data,
+              default_values: { ...PRECREATE.body.data.default_values, rivalsa: 4 },
+            },
+          },
+        }),
+    );
+    const { app } = testApp({ fic, mode: 'write' });
+    const res = await call(await connect(app), 'fic_create_issued_document', {
+      client_id: 501,
+      items: [{ name: 'Consulenza', net_price: 200, vat_id: 66 }],
+      stamp_duty: 2,
+      ei_payment_method: 'MP05',
+    });
+    const body = fic.callsTo('/c/1001/issued_documents/totals')[0]!.body as { data: Record<string, unknown> };
+    expect(body.data.rivalsa).toBe(4);
+    expect((body.data.items_list as Array<Record<string, unknown>>)[0]!.apply_withholding_taxes).toBe(true);
+    const notes = ((res.data.preview as { notes: string[] }).notes ?? []).join(' ');
+    expect(notes).toContain('predefiniti');
+    expect(notes).toContain('TC22');
+  });
+
+  it('avvisa sul bollo dei documenti senza IVA: manca sopra 77,47 euro, c’è sotto', async () => {
+    const fic = withTotals(
+      new FakeFic()
+        .withCompany()
+        .on('GET', '/c/1001/entities/clients/501', { body: { data: CLIENT_ROSSI } })
+        .on('GET', '/c/1001/issued_documents/info', PRECREATE),
+    );
+    const { app } = testApp({ fic, mode: 'write' });
+    const client = await connect(app);
+    const notes = async (net: number, stamp?: number) =>
+      (
+        (
+          (
+            await call(client, 'fic_create_issued_document', {
+              client_id: 501,
+              items: [{ name: 'Consulenza', net_price: net, vat_id: 66 }],
+              ei_payment_method: 'MP05',
+              ...(stamp !== undefined ? { stamp_duty: stamp } : {}),
+            })
+          ).data.preview as { notes?: string[] }
+        ).notes ?? []
+      ).join(' ');
+    expect(await notes(85)).toContain('serve il bollo di 2 euro');
+    expect(await notes(70, 2)).toContain('non è dovuto');
+    expect(await notes(85, 2)).toBe('');
+    expect(await notes(77.47)).toBe('');
+  });
+
   it('non è disponibile in sola lettura', async () => {
     const { app } = testApp({ mode: 'readonly' });
     await expect(
