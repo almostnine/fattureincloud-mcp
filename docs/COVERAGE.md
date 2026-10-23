@@ -3,9 +3,9 @@
 File generato da `scripts/gen-coverage.ts`: non modificare a mano.
 
 - Specifica: OpenAPI Fatture in Cloud 2.1.8, 123 operazioni.
-- Raggiungibili da almeno un tool: 123 su 123 (verificato anche da un test).
+- Raggiungibili da almeno un tool: 117 su 123 (verificato anche da un test).
 - Con un tool dedicato: 79; le altre passano dai tool generici `fic_api_read` e `fic_api_write`, guidati dal catalogo. Tutte le cancellazioni passano da `fic_delete`.
-- Esercitate dai test automatici (risposte simulate): 123 su 123.
+- Esercitate dai test automatici (risposte simulate): 117 su 123.
 - I percorsi sono relativi a `/c/{company_id}` salvo quelli sotto `/user` e `/info`.
 
 ### Archive
@@ -81,12 +81,12 @@ File generato da `scripts/gen-coverage.ts`: non modificare a mano.
 | `ListBinIssuedDocuments` | GET `/bin/issued_documents` | lettura | readonly | `fic_api_read` | sì |
 | `DeleteBinIssuedDocument` | DELETE `/bin/issued_documents/{document_id}` | cancellazione definitiva | write | `fic_delete` | sì |
 | `GetBinIssuedDocument` | GET `/bin/issued_documents/{document_id}` | lettura | readonly | `fic_delete`, `fic_api_read` | sì |
-| `RecoverBinIssuedDocument` | POST `/bin/issued_documents/{document_id}/recover` | scrittura | write | `fic_api_write` | sì |
+| `RecoverBinIssuedDocument` | POST `/bin/issued_documents/{document_id}/recover` | scrittura | write |  | no |
 | `listIssuedDocuments` | GET `/issued_documents` | lettura | readonly | `fic_list_issued_documents`, `fic_get_issued_document`, `fic_list_installments`, `fic_get_entity`, `fic_situation`, `fic_reconcile`, `fic_api_read` | sì |
-| `createIssuedDocument` | POST `/issued_documents` | scrittura | write | `fic_create_issued_document`, `fic_convert_issued_document`, `fic_duplicate_issued_document`, `fic_api_write` | sì |
+| `createIssuedDocument` | POST `/issued_documents` | scrittura | write | `fic_create_issued_document`, `fic_convert_issued_document`, `fic_duplicate_issued_document` | sì |
 | `deleteIssuedDocument` | DELETE `/issued_documents/{document_id}` | cancellazione | write | `fic_delete` | sì |
 | `getIssuedDocument` | GET `/issued_documents/{document_id}` | lettura | readonly | `fic_get_issued_document`, `fic_get_einvoice`, `fic_download_file`, `fic_set_installment_status`, `fic_update_issued_document`, `fic_convert_issued_document`, `fic_duplicate_issued_document`, `fic_delete`, `fic_send_einvoice`, `fic_send_email`, `fic_api_read` | sì |
-| `modifyIssuedDocument` | PUT `/issued_documents/{document_id}` | scrittura | write | `fic_set_installment_status`, `fic_update_issued_document`, `fic_api_write` | sì |
+| `modifyIssuedDocument` | PUT `/issued_documents/{document_id}` | scrittura | write | `fic_set_installment_status`, `fic_update_issued_document` | sì |
 | `deleteIssuedDocumentAttachment` | DELETE `/issued_documents/{document_id}/attachment` | cancellazione | write | `fic_delete` | sì |
 | `getEmailData` | GET `/issued_documents/{document_id}/email` | lettura | readonly | `fic_send_email`, `fic_api_read` | sì |
 | `scheduleEmail` | POST `/issued_documents/{document_id}/email` | invio | full | `fic_send_email` | sì |
@@ -142,7 +142,7 @@ File generato da `scripts/gen-coverage.ts`: non modificare a mano.
 | `ListBinReceivedDocuments` | GET `/bin/received_documents` | lettura | readonly | `fic_api_read` | sì |
 | `DeleteBinReceivedDocument` | DELETE `/bin/received_documents/{document_id}` | cancellazione definitiva | write | `fic_delete` | sì |
 | `GetBinReceivedDocument` | GET `/bin/received_documents/{document_id}` | lettura | readonly | `fic_delete`, `fic_api_read` | sì |
-| `RecoverBinReceivedDocument` | POST `/bin/received_documents/{document_id}/recover` | scrittura | write | `fic_api_write` | sì |
+| `RecoverBinReceivedDocument` | POST `/bin/received_documents/{document_id}/recover` | scrittura | write |  | no |
 | `listReceivedDocuments` | GET `/received_documents` | lettura | readonly | `fic_situation`, `fic_list_received_documents`, `fic_api_read` | sì |
 | `createReceivedDocument` | POST `/received_documents` | scrittura | write | `fic_api_write` | sì |
 | `deleteReceivedDocument` | DELETE `/received_documents/{document_id}` | cancellazione | write | `fic_delete` | sì |
@@ -160,14 +160,14 @@ File generato da `scripts/gen-coverage.ts`: non modificare a mano.
 
 | Operazione | Metodo e percorso | Effetto | Modalità | Tool | Testata |
 |---|---|---|---|---|---|
-| `createPaymentAccount` | POST `/settings/payment_accounts` | scrittura | write | `fic_api_write` | sì |
+| `createPaymentAccount` | POST `/settings/payment_accounts` | scrittura | write |  | no |
 | `deletePaymentAccount` | DELETE `/settings/payment_accounts/{payment_account_id}` | cancellazione | write | `fic_delete` | sì |
 | `getPaymentAccount` | GET `/settings/payment_accounts/{payment_account_id}` | lettura | readonly | `fic_delete`, `fic_api_read` | sì |
-| `modifyPaymentAccount` | PUT `/settings/payment_accounts/{payment_account_id}` | scrittura | write | `fic_api_write` | sì |
-| `createPaymentMethod` | POST `/settings/payment_methods` | scrittura | write | `fic_api_write` | sì |
+| `modifyPaymentAccount` | PUT `/settings/payment_accounts/{payment_account_id}` | scrittura | write |  | no |
+| `createPaymentMethod` | POST `/settings/payment_methods` | scrittura | write |  | no |
 | `deletePaymentMethod` | DELETE `/settings/payment_methods/{payment_method_id}` | cancellazione | write | `fic_delete` | sì |
 | `getPaymentMethod` | GET `/settings/payment_methods/{payment_method_id}` | lettura | readonly | `fic_delete`, `fic_api_read` | sì |
-| `modifyPaymentMethod` | PUT `/settings/payment_methods/{payment_method_id}` | scrittura | write | `fic_api_write` | sì |
+| `modifyPaymentMethod` | PUT `/settings/payment_methods/{payment_method_id}` | scrittura | write |  | no |
 | `getTaxProfile` | GET `/settings/tax_profile` | lettura | readonly | `fic_api_read` | sì |
 | `listTemplates` | GET `/settings/templates` | lettura | readonly | `fic_reference_data`, `fic_api_read` | sì |
 | `getTemplate` | GET `/settings/templates/{template_id}` | lettura | readonly | `fic_api_read` | sì |

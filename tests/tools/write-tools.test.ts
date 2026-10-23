@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CLIENT_ROSSI, invoice, payment } from '../fixtures/issued.js';
-import { call, connect, testApp } from '../helpers/app.js';
+import { call, connect, previewAndRun, testApp } from '../helpers/app.js';
 import { FakeFic } from '../helpers/fake-fetch.js';
 
 const PRECREATE = {
@@ -110,13 +110,14 @@ describe('fic_create_issued_document', () => {
         })),
     );
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_create_issued_document', {
+    const { preview, done: res } = await previewAndRun(await connect(app), 'fic_create_issued_document', {
       client_id: 501,
       date: '2026-10-16',
       items: [{ name: 'Consulenza 🙂', net_price: 100, vat_id: 0 }],
       installments: [{ due_date: '2026-11-16' }, { due_date: '2026-12-16' }],
     });
-    expect(res.isError).toBe(false);
+    expect(preview.data).toMatchObject({ dry_run: true, created: false });
+    expect(res.isError, res.text).toBe(false);
     const post = fic.calls.find((c) => c.method === 'POST' && c.path === '/c/1001/issued_documents')!;
     const body = post.body as { data: Record<string, unknown>; options: Record<string, unknown> };
     expect(body.options).toEqual({ fix_payments: true });
@@ -195,12 +196,12 @@ describe('fic_duplicate_issued_document (bug noto del progetto di riferimento)',
         })),
     );
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_duplicate_issued_document', {
+    const { done: res } = await previewAndRun(await connect(app), 'fic_duplicate_issued_document', {
       document_id: 40,
       date: '2026-10-01',
       replace_text: [{ from: 'settembre', to: 'ottobre' }],
     });
-    expect(res.isError).toBe(false);
+    expect(res.isError, res.text).toBe(false);
     const body = fic.calls.find((c) => c.method === 'POST' && c.path === '/c/1001/issued_documents')!
       .body as { data: Record<string, unknown> };
     const d = body.data;
@@ -245,11 +246,12 @@ describe('fic_update_issued_document', () => {
         body: { data: invoice({ id: 7, visible_subject: 'Nuovo' }) },
       });
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_update_issued_document', {
+    const { done: res } = await previewAndRun(await connect(app), 'fic_update_issued_document', {
       document_id: 7,
       visible_subject: 'Nuovo',
     });
     expect(res.data.changed).toEqual(['visible_subject']);
+    expect(res.data.updated).toBe(true);
     expect(fic.calls.at(-1)!.body).toEqual({
       data: { type: 'invoice', visible_subject: 'Nuovo' },
       options: { fix_payments: true },
@@ -296,8 +298,11 @@ describe('fic_convert_issued_document', () => {
         body: { data: { ...(c.body as { data: object }).data, id: 51, number: 36 } },
       }));
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_convert_issued_document', { document_id: 50 });
-    expect(res.isError).toBe(false);
+    const { preview, done: res } = await previewAndRun(await connect(app), 'fic_convert_issued_document', {
+      document_id: 50,
+    });
+    expect(preview.data).toMatchObject({ dry_run: true, converted: false });
+    expect(res.isError, res.text).toBe(false);
     expect(fic.callsTo('/c/1001/issued_documents/transform')[0]!.query).toMatchObject({
       original_document_id: '50',
       new_type: 'invoice',

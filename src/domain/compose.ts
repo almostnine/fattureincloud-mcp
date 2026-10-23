@@ -1,4 +1,5 @@
 import { refused } from '../api/errors.js';
+import { stripBankKeys } from '../safety/bank.js';
 import { addDays, daysBetween, endOfMonth } from './dates.js';
 import { fromCents, splitCents, toCents } from './money.js';
 import type { Entity, IssuedDocument, Item, PaymentItem } from './types.js';
@@ -72,9 +73,10 @@ export function buildInstallments(
 }
 
 /**
- * Rate esplicite. Gli importi indicati si rispettano; il residuo del totale da pagare si divide in parti
- * uguali tra le rate senza importo. Se gli importi non tornano con il totale si rifiuta, invece di lasciare
- * che `fix_payments` corregga l'ultima rata senza dirlo.
+ * Rate esplicite. Gli importi indicati si arrotondano al centesimo (metà per eccesso) e si inviano così;
+ * il residuo del totale da pagare si divide in parti uguali tra le rate senza importo. Se gli importi
+ * arrotondati non tornano con il totale si rifiuta, invece di lasciare che `fix_payments` corregga
+ * l'ultima rata senza dirlo.
  */
 export function explicitInstallments(
   amountDue: number,
@@ -97,7 +99,7 @@ export function explicitInstallments(
   const rest = missing > 0 ? splitCents(due - given, missing) : [];
   let k = 0;
   return list.map((p) => ({
-    amount: p.amount !== undefined ? p.amount : fromCents(rest[k++]!),
+    amount: fromCents(p.amount !== undefined ? toCents(p.amount) : rest[k++]!),
     due_date: p.due_date,
     status: 'not_paid',
   }));
@@ -152,7 +154,7 @@ const COPY_FIELDS = [
   'amount_withholding_tax_taxable',
   'amount_other_withholding_tax_taxable',
   'amount_enasarco_taxable',
-  'ei_raw',
+  // ei_raw non si copia: i dati FatturaPA grezzi possono contenere coordinate bancarie (IBAN, ABI, CAB).
   'price_list_id',
   'delivery_note',
   'accompanying_invoice',
@@ -195,7 +197,6 @@ const ITEM_COPY = [
   'not_taxable',
   'apply_withholding_taxes',
   'in_dn',
-  'ei_raw',
 ] as const;
 
 export interface Replacement {
@@ -211,6 +212,8 @@ function replaceAll(s: unknown, reps: Replacement[]): unknown {
 /**
  * Corpo per duplicare un documento: whitelist dei campi scrivibili; niente ID, numero, importi di sola
  * lettura, URL, stato SDI, ID di righe e rate. Le aliquote restano quelle originali (per `id`).
+ * Niente coordinate bancarie: del metodo di pagamento si copia solo l'id, da `ei_data` si tolgono
+ * bank_iban, bank_name, bank_beneficiary e simili, `ei_raw` non si copia.
  * Le rate vanno ricalcolate dopo, sul totale calcolato da FIC.
  */
 export function duplicateBody(
@@ -244,7 +247,7 @@ export function duplicateBody(
     // I riferimenti a ordini e fatture collegate valgono per il documento originale.
     const { od_number, od_date, invoice_number, invoice_date, original_document_type, ...rest } =
       src.ei_data as Record<string, unknown>;
-    out.ei_data = rest;
+    out.ei_data = stripBankKeys(rest);
   }
   out.items_list = (src.items_list ?? []).map((it) => {
     const item: Record<string, unknown> = {};
@@ -266,7 +269,7 @@ export function duplicateBody(
  * Rate del documento duplicato: stesse proporzioni degli importi dell'originale, applicate al nuovo totale
  * da pagare calcolato da FIC. Le scadenze si ricalcolano dai termini della rata (giorni e fine mese) quando
  * ci sono, altrimenti con la stessa distanza in giorni dalla data del documento. Se l'originale non ha rate,
- * nemmeno la copia ne ha.
+ * nemmeno la copia ne ha. I dati FatturaPA grezzi delle rate (`ei_raw`, che può contenere l'IBAN) non si copiano.
  */
 export function shiftedInstallments(src: IssuedDocument, newDate: string, amountDue: number): PaymentItem[] {
   const list = (src.payments_list ?? []).filter((p) => p.status !== 'reversed');
@@ -293,7 +296,6 @@ export function shiftedInstallments(src: IssuedDocument, newDate: string, amount
       due_date: dueDate,
       status: 'not_paid',
       ...(days !== null && days !== undefined ? { payment_terms: { days, type } } : {}),
-      ...(p.ei_raw ? { ei_raw: p.ei_raw } : {}),
     };
   });
 }

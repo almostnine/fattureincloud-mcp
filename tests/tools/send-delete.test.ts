@@ -15,10 +15,8 @@ function sdiFic(status: string | null = 'not_sent', updated = '2026-10-15 10:00:
     });
 }
 
-const sendCalls = (fic: FakeFic) =>
-  fic
-    .callsTo('/c/1001/issued_documents/5/e_invoice/send')
-    .filter((c) => !(c.body as { options?: { dry_run?: boolean } }).options?.dry_run);
+// Qualsiasi chiamata all'endpoint di invio, anche con dry_run: in anteprima non deve essercene nessuna.
+const sendCalls = (fic: FakeFic) => fic.callsTo('/c/1001/issued_documents/5/e_invoice/send');
 
 describe('fic_send_einvoice', () => {
   it('non esiste in modalità write', async () => {
@@ -28,20 +26,46 @@ describe('fic_send_einvoice', () => {
     expect(names).not.toContain('fic_send_email');
   });
 
-  it('senza conferma fa solo anteprima e prova di invio', async () => {
+  it('l’anteprima usa solo la verifica dell’XML: l’endpoint di invio non viene mai chiamato', async () => {
     const fic = sdiFic();
-    const { app } = testApp({ fic, mode: 'full' });
+    const { app, dialogs } = testApp({ fic, mode: 'full' });
     const res = await call(await connect(app), 'fic_send_einvoice', { document_id: 5 });
-    expect(res.data).toMatchObject({
-      preview: true,
-      sent: false,
-      xml_verification: { valid: true },
-      dry_run: { ok: true },
-    });
+    expect(res.data).toMatchObject({ preview: true, sent: false, xml_verification: { valid: true } });
+    expect(res.data).not.toHaveProperty('dry_run');
     expect(res.data.confirm_token).toMatch(/^SDI-5-/);
+    expect(fic.callsTo('/c/1001/issued_documents/5/e_invoice/xml_verify')).toHaveLength(1);
     expect(sendCalls(fic)).toHaveLength(0);
-    const dry = fic.callsTo('/c/1001/issued_documents/5/e_invoice/send')[0]!.body;
-    expect(dry).toEqual({ data: {}, options: { dry_run: true } });
+    expect(dialogs).toHaveLength(0);
+  });
+
+  it('invia solo dopo la conferma umana, mostrando il testo dell’anteprima', async () => {
+    const fic = sdiFic();
+    const { app, dialogs } = testApp({ fic, mode: 'full' });
+    const client = await connect(app);
+    const preview = await call(client, 'fic_send_einvoice', { document_id: 5 });
+    const ok = await call(client, 'fic_send_einvoice', {
+      document_id: 5,
+      confirm: preview.data.confirm_token,
+    });
+    expect(ok.data).toMatchObject({ sent: true });
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]).toContain(preview.data.confirmation_text as string);
+    expect(sendCalls(fic)).toHaveLength(1);
+    expect(sendCalls(fic)[0]!.body).toEqual({ data: {} });
+  });
+
+  it('se l’utente annulla la finestra non invia nulla', async () => {
+    const fic = sdiFic();
+    const { app } = testApp({ fic, mode: 'full', human: 'decline' });
+    const client = await connect(app);
+    const preview = await call(client, 'fic_send_einvoice', { document_id: 5 });
+    const res = await call(client, 'fic_send_einvoice', {
+      document_id: 5,
+      confirm: preview.data.confirm_token,
+    });
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain('non ha confermato');
+    expect(sendCalls(fic)).toHaveLength(0);
   });
 
   it('invia solo con il token giusto', async () => {
@@ -188,7 +212,7 @@ describe('fic_delete', () => {
         body: { data: { ...CLIENT_ROSSI, updated_at: '2026-01-01 00:00:00' } },
       })
       .on('DELETE', '/c/1001/entities/clients/501', { status: 200, body: {} });
-    const { app } = testApp({ fic, mode: 'write' });
+    const { app } = testApp({ fic, mode: 'write', config: { enableDelete: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_delete', { resource: 'client', id: 501 });
     expect(preview.data).toMatchObject({ preview: true, deleted: false, item: { id: 501 } });
@@ -208,7 +232,7 @@ describe('fic_delete', () => {
       .on('GET', /^\/c\/1001\/entities\/clients\/\d+$/, { body: { data: CLIENT_ROSSI } })
       .on('GET', '/c/1001/products/501', { body: { data: { id: 501, name: 'Prodotto' } } })
       .on('DELETE', /.*/, { body: {} });
-    const { app } = testApp({ fic, mode: 'write' });
+    const { app } = testApp({ fic, mode: 'write', config: { enableDelete: true } });
     const client = await connect(app);
     const preview = await call(client, 'fic_delete', { resource: 'client', id: 501 });
     const res = await call(client, 'fic_delete', {
@@ -225,7 +249,7 @@ describe('fic_delete', () => {
       .withCompany()
       .on('GET', '/c/1001/bin/issued_documents/9', { body: { data: { id: 9 } } })
       .on('GET', '/c/1001/issued_documents/7', { body: { data: invoice({ id: 7, locked: true }) } });
-    const { app } = testApp({ fic, mode: 'write' });
+    const { app } = testApp({ fic, mode: 'write', config: { enableDelete: true } });
     const client = await connect(app);
     const bin = await call(client, 'fic_delete', { resource: 'bin_issued_document', id: 9 });
     expect(bin.data.after_delete).toContain('DEFINITIVAMENTE');

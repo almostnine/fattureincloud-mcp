@@ -8,8 +8,18 @@ import { installmentRows } from '../domain/installments.js';
 import { fromCents, toCents } from '../domain/money.js';
 import { Q } from '../domain/query.js';
 import type { DataResponse, Entity, IssuedDocument } from '../domain/types.js';
+import { assertNoBankData } from '../safety/bank.js';
 import { cleanOutgoingText, untrusted } from '../safety/untrusted.js';
+import { wrapFreeText } from '../safety/wrap.js';
 import { pagingShape } from './common.js';
+import {
+  authorize,
+  confirmSchema,
+  dryRunSchema,
+  humanPrompt,
+  type Pending,
+  previewFields,
+} from './confirm-flow.js';
 import { defineTool } from './define.js';
 
 const kindSchema = z
@@ -314,8 +324,9 @@ export const createEntity = defineTool({
   title: 'Crea cliente o fornitore',
   description: `Crea un nuovo cliente (default) o fornitore nell'anagrafica di Fatture in Cloud. Serve almeno il nome; per fatturare a un privato servono di solito codice fiscale e indirizzo, per un'azienda partita IVA, indirizzo e codice destinatario SDI (ei_code) o PEC.
 Prima di creare, il tool cerca anagrafiche con la stessa partita IVA, codice fiscale, email o nome: se ne trova, non crea nulla e le restituisce. Mostrale all'utente; se conferma che è davvero un nuovo cliente, ripeti con allow_duplicate: true.
-Raccogli i dati dall'utente e riepilogali prima di creare: non inventare dati mancanti.
-Creates a client or supplier, checking for likely duplicates first.`,
+Raccogli i dati dall'utente e non inventare dati mancanti. La prima chiamata (dry_run default true) restituisce l'anteprima e un token; per creare ripeti con gli stessi dati, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente.
+Non accetta coordinate bancarie (IBAN): si gestiscono dall'app web.
+Creates a client or supplier, checking for likely duplicates first; preview, then human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   input: z.object({
@@ -328,10 +339,13 @@ Creates a client or supplier, checking for likely duplicates first.`,
       .describe(
         'Crea anche se esistono anagrafiche simili: solo dopo che l’utente ha confermato che è un soggetto diverso.',
       ),
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
   }),
   operations: ['listClients', 'listSuppliers', 'createClient', 'createSupplier'],
-  handler: async ({ kind, allow_duplicate, ...data }, app) => {
+  handler: async ({ kind, allow_duplicate, dry_run, confirm, ...data }, app, call) => {
     const body = cleanEntity(data, kind);
+    assertNoBankData(body, 'Anagrafica');
     if (!allow_duplicate) {
       const dups = await findDuplicates(app, kind, body);
       if (dups.length) {
@@ -344,6 +358,23 @@ Creates a client or supplier, checking for likely duplicates first.`,
         };
       }
     }
+    const pending: Pending = {
+      action: 'ENT',
+      id: `new-${kind}`,
+      state: '',
+      params: body,
+      prompt: humanPrompt(kind === 'client' ? 'Nuovo cliente' : 'Nuovo fornitore', body),
+    };
+    if (dry_run || !confirm) {
+      return {
+        kind,
+        dry_run: true,
+        created: false,
+        data: entityDetail(body as Entity),
+        ...previewFields(app, call, pending, 'dry_run: false e confirm uguale a confirm_token'),
+      };
+    }
+    await authorize(app, call, confirm, pending);
     const client = await app.api();
     const p = PATHS[kind];
     const res = await client.request<DataResponse<Entity>>({
@@ -361,16 +392,49 @@ Creates a client or supplier, checking for likely duplicates first.`,
 export const updateEntity = defineTool({
   name: 'fic_update_entity',
   title: 'Modifica cliente o fornitore',
-  description: `Modifica i campi indicati di un cliente o fornitore; i campi non indicati restano invariati. Restituisce i valori prima e dopo per i campi cambiati.
-Updates the given fields of a client or supplier.`,
+  description: `Modifica i campi indicati di un cliente o fornitore; i campi non indicati restano invariati. La prima chiamata (dry_run default true) restituisce i valori prima e dopo e un token; per salvare ripeti con gli stessi campi, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente.
+Updates the given fields of a client or supplier, after preview and human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  input: z.object({ kind: kindSchema, id: z.number().int().positive(), ...entityFields }),
+  input: z.object({
+    kind: kindSchema,
+    id: z.number().int().positive(),
+    ...entityFields,
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
+  }),
   operations: ['getClient', 'getSupplier', 'modifyClient', 'modifySupplier'],
-  handler: async ({ kind, id, ...data }, app) => {
+  handler: async ({ kind, id, dry_run, confirm, ...data }, app, call) => {
     const changes = cleanEntity(data, kind);
     if (Object.keys(changes).length === 0) throw refused('Nessun campo da modificare.');
+    assertNoBankData(changes, 'Anagrafica');
     const before = await getEntity(app, kind, id);
+    const proposed: Record<string, { before: unknown; after: unknown }> = {};
+    for (const k of Object.keys(changes))
+      proposed[k] = { before: (before as Record<string, unknown>)[k] ?? null, after: changes[k] };
+    const pending: Pending = {
+      action: 'ENT',
+      id: `${kind}-${id}`,
+      state: String(before.updated_at ?? ''),
+      params: changes,
+      prompt: humanPrompt(kind === 'client' ? 'Modifica cliente' : 'Modifica fornitore', {
+        anagrafica: `${entityName(before) ?? '?'} (ID ${id})`,
+        modifiche: Object.fromEntries(
+          Object.entries(proposed).map(([k, v]) => [k, `${v.before ?? '(vuoto)'} -> ${v.after}`]),
+        ),
+      }),
+    };
+    if (dry_run || !confirm) {
+      return {
+        kind,
+        id,
+        dry_run: true,
+        updated: false,
+        changes: wrapFreeText(proposed),
+        ...previewFields(app, call, pending, 'dry_run: false e confirm uguale a confirm_token'),
+      };
+    }
+    await authorize(app, call, confirm, pending);
     const client = await app.api();
     const p = PATHS[kind];
     const res = await client.request<DataResponse<Entity>>({

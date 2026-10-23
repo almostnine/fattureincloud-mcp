@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CLIENT_BIANCHI, invoice, page, payment } from '../fixtures/issued.js';
-import { call, connect, testApp } from '../helpers/app.js';
+import { call, connect, previewAndRun, testApp } from '../helpers/app.js';
 import { FakeFic } from '../helpers/fake-fetch.js';
 
 const ACCOUNTS = {
@@ -115,14 +115,15 @@ describe('fic_set_installment_status', () => {
         },
       }));
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_set_installment_status', {
+    const { preview, done: res } = await previewAndRun(await connect(app), 'fic_set_installment_status', {
       document_id: 7,
       installment: 1,
       status: 'paid',
       paid_date: '2026-10-09',
       payment_account_id: 3,
     });
-    expect(res.isError).toBe(false);
+    expect(preview.data).toMatchObject({ dry_run: true, updated: false });
+    expect(res.isError, res.text).toBe(false);
     const put = fic.calls.find((c) => c.method === 'PUT')!;
     const body = put.body as { data: { type: string; payments_list: Array<Record<string, unknown>> } };
     expect(body.data.type).toBe('invoice');
@@ -176,12 +177,12 @@ describe('fic_set_installment_status', () => {
       .on('GET', '/c/1001/info/payment_accounts', ACCOUNTS)
       .on('PUT', '/c/1001/issued_documents/7', { body: { data: doc } });
     const { app } = testApp({ fic, mode: 'write', config: { defaultPaymentAccountId: 4 } });
-    const res = await call(await connect(app), 'fic_set_installment_status', {
+    const { done: res } = await previewAndRun(await connect(app), 'fic_set_installment_status', {
       document_id: 7,
       due_date: '2026-11-10',
       status: 'paid',
     });
-    expect(res.isError).toBe(false);
+    expect(res.isError, res.text).toBe(false);
     const body = fic.calls.find((c) => c.method === 'PUT')!.body as {
       data: { payments_list: Array<Record<string, unknown>> };
     };
@@ -211,11 +212,11 @@ describe('fic_set_installment_status', () => {
       .on('GET', '/c/1001/issued_documents/7', { body: { data: doc } })
       .on('PUT', '/c/1001/issued_documents/7', { body: { data: doc } });
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_set_installment_status', {
+    const { done: res } = await previewAndRun(await connect(app), 'fic_set_installment_status', {
       document_id: 7,
       status: 'not_paid',
     });
-    expect(res.isError).toBe(false);
+    expect(res.isError, res.text).toBe(false);
     const body = fic.calls.find((c) => c.method === 'PUT')!.body as {
       data: { payments_list: Array<Record<string, unknown>> };
     };

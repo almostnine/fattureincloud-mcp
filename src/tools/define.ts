@@ -1,8 +1,9 @@
-import type { CallToolResult } from '@modelcontextprotocol/server';
+import type { CallToolResult, InputRequiredResult } from '@modelcontextprotocol/server';
 import type { z } from 'zod';
 import { errorToText, FicError } from '../api/errors.js';
 import { type Config, type Mode, modeAllows } from '../config.js';
 import type { AppContext } from '../context.js';
+import { type HumanChannel, InputRequiredSignal } from '../safety/human.js';
 import { containsUntrusted, UNTRUSTED_NOTICE } from '../safety/untrusted.js';
 
 /** Le quattro annotation sono obbligatorie per costruzione: un tool senza annotation non compila. */
@@ -11,6 +12,11 @@ export interface Annotations {
   destructiveHint: boolean;
   idempotentHint: boolean;
   openWorldHint: boolean;
+}
+
+/** Contesto della singola chiamata: il canale verso la persona per la conferma delle scritture. */
+export interface ToolCall {
+  human?: HumanChannel;
 }
 
 export interface ToolDef<I extends z.ZodObject = z.ZodObject> {
@@ -26,7 +32,7 @@ export interface ToolDef<I extends z.ZodObject = z.ZodObject> {
   operations: string[];
   /** Tipo di documento coinvolto, per i messaggi sugli scope mancanti. */
   docTypeOf?: (args: z.infer<I>) => string | undefined;
-  handler: (args: z.infer<I>, app: AppContext) => Promise<Record<string, unknown>>;
+  handler: (args: z.infer<I>, app: AppContext, call: ToolCall) => Promise<Record<string, unknown>>;
 }
 
 export function defineTool<I extends z.ZodObject>(def: ToolDef<I>): ToolDef<I> {
@@ -79,15 +85,30 @@ function rememberEmails(value: unknown, into: Set<string>, depth = 0): void {
 }
 
 /**
- * Un tool è attivo se la modalità lo consente, oppure se è un tool di scrittura (non di invio) abilitato
- * singolarmente con FIC_EXTRA_TOOLS. Gli invii (modalità full) non si abilitano mai uno per uno.
+ * Elenco chiuso dei nomi che FIC_EXTRA_TOOLS riconosce. Non comprende mai fic_api_write, fic_delete né gli
+ * invii. Dalla 1.2.0 FIC_EXTRA_TOOLS è ignorato in readonly per tutto ciò che scrive, cioè per ognuno di
+ * questi tool: la sola lettura resta sola lettura. L'elenco serve per gli avvisi all'avvio.
+ */
+export const EXTRA_TOOLS_ALLOWLIST: readonly string[] = [
+  'fic_set_installment_status',
+  'fic_create_entity',
+  'fic_update_entity',
+  'fic_create_issued_document',
+  'fic_update_issued_document',
+  'fic_duplicate_issued_document',
+  'fic_convert_issued_document',
+];
+
+/**
+ * Un tool è attivo se la modalità lo consente. fic_delete richiede in più FIC_ENABLE_DELETE=true.
+ * FIC_EXTRA_TOOLS non abilita più nulla (vedi EXTRA_TOOLS_ALLOWLIST).
  */
 export function isToolEnabled(
-  config: Pick<Config, 'mode' | 'extraTools'>,
+  config: Pick<Config, 'mode' | 'enableDelete'>,
   def: Pick<ToolDef, 'name' | 'minMode'>,
 ): boolean {
-  if (modeAllows(config.mode, def.minMode)) return true;
-  return def.minMode === 'write' && config.extraTools.includes(def.name);
+  if (def.name === 'fic_delete' && !config.enableDelete) return false;
+  return modeAllows(config.mode, def.minMode);
 }
 
 /** Esegue l'handler con il doppio controllo di modalità e la traduzione degli errori. */
@@ -95,7 +116,8 @@ export async function runTool<I extends z.ZodObject>(
   def: ToolDef<I>,
   args: z.infer<I>,
   app: AppContext,
-): Promise<CallToolResult> {
+  call: ToolCall = {},
+): Promise<CallToolResult | InputRequiredResult> {
   let docType: string | undefined;
   try {
     docType = def.docTypeOf?.(args);
@@ -106,9 +128,11 @@ export async function runTool<I extends z.ZodObject>(
       );
     }
     if (def.minMode === 'write') rememberEmails(args, app.sessionEmails);
-    const data = await def.handler(args, app);
+    const data = await def.handler(args, app, call);
     return toResult(data);
   } catch (err) {
+    // Era 2026-07-28: il client deve chiedere la conferma alla persona e ripetere la chiamata.
+    if (err instanceof InputRequiredSignal) return err.result;
     if (err instanceof FicError) {
       app.log.info('tool in errore', { tool: def.name, kind: err.kind, status: err.details.status });
     } else {

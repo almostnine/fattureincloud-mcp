@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { OPERATIONS } from '../../src/api/catalog.generated.js';
+import { loadConfig } from '../../src/config.js';
 import { ALL_TOOLS } from '../../src/tools/index.js';
 import { call, connect, testApp } from '../helpers/app.js';
 import { FakeFic } from '../helpers/fake-fetch.js';
@@ -34,7 +35,6 @@ const WRITE_TOOLS = [
   'fic_update_issued_document',
   'fic_convert_issued_document',
   'fic_duplicate_issued_document',
-  'fic_delete',
   'fic_api_write',
 ];
 const SEND_TOOLS = ['fic_send_einvoice', 'fic_send_email'];
@@ -68,6 +68,22 @@ describe('modalità', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([...expected].sort());
   });
 
+  it('fic_delete esiste solo con FIC_ENABLE_DELETE=true, e mai in readonly', async () => {
+    for (const [mode, enableDelete, present] of [
+      ['write', true, true],
+      ['full', true, true],
+      ['write', false, false],
+      ['readonly', true, false],
+    ] as const) {
+      const { app } = testApp({ mode, config: { enableDelete } });
+      const names = (await (await connect(app)).listTools()).tools.map((t) => t.name);
+      expect(names.includes('fic_delete'), `${mode} ${enableDelete}`).toBe(present);
+    }
+    expect(loadConfig({ FIC_ENABLE_DELETE: 'true' }).enableDelete).toBe(true);
+    expect(loadConfig({ FIC_ENABLE_DELETE: 'si' }).enableDelete).toBe(false);
+    expect(loadConfig({}).enableDelete).toBe(false);
+  });
+
   it('in readonly nessun tool esposto può modificare Fatture in Cloud', async () => {
     const { app } = testApp({ mode: 'readonly' });
     const tools = (await (await connect(app)).listTools()).tools;
@@ -78,7 +94,7 @@ describe('modalità', () => {
   });
 
   it('ogni tool ha titolo, descrizione e le quattro annotation attese', async () => {
-    const { app } = testApp({ mode: 'full' });
+    const { app } = testApp({ mode: 'full', config: { enableDelete: true } });
     const tools = (await (await connect(app)).listTools()).tools;
     expect(tools).toHaveLength(Object.keys(EXPECTED).length);
     for (const t of tools) {
@@ -97,7 +113,17 @@ describe('copertura dell’API', () => {
   it('ogni operazione del catalogo è raggiungibile da almeno un tool', () => {
     const covered = new Set(ALL_TOOLS.flatMap((t) => t.operations));
     const missing = OPERATIONS.filter((o) => !covered.has(o.id)).map((o) => o.id);
-    expect(missing).toEqual([]);
+    // Uniche eccezioni volute: conti e metodi di pagamento e recupero dal cestino si fanno dall'app web.
+    expect(missing.sort()).toEqual(
+      [
+        'RecoverBinIssuedDocument',
+        'RecoverBinReceivedDocument',
+        'createPaymentAccount',
+        'createPaymentMethod',
+        'modifyPaymentAccount',
+        'modifyPaymentMethod',
+      ].sort(),
+    );
   });
 
   it('i tool dichiarano solo operazioni esistenti', () => {
@@ -218,6 +244,7 @@ describe('fic_api_write', () => {
       confirm: preview.data.confirm_token,
     });
     expect(ok.data).toMatchObject({ executed: true });
+    expect(full.dialogs[0]).toContain('https://hook.example.com/x');
   });
 
   it('carica allegati solo dalla cartella di scambio', async () => {
@@ -231,10 +258,11 @@ describe('fic_api_write', () => {
       .on('POST', '/c/1001/archive/attachment', { body: { data: { attachment_token: 'tok123' } } });
     const { app } = testApp({ fic, mode: 'write', config: { downloadDir: dir } });
     const client = await connect(app);
-    const ok = await call(client, 'fic_api_write', {
-      operation_id: 'uploadArchiveDocumentAttachment',
-      file_path: 'sub/ricevuta.pdf',
-    });
+    const upload = { operation_id: 'uploadArchiveDocumentAttachment', file_path: 'sub/ricevuta.pdf' };
+    const preview = await call(client, 'fic_api_write', upload);
+    expect(preview.data).toMatchObject({ preview: true, file: { name: 'ricevuta.pdf' } });
+    expect(fic.calls.some((c) => c.method === 'POST')).toBe(false);
+    const ok = await call(client, 'fic_api_write', { ...upload, confirm: preview.data.confirm_token });
     expect(ok.data).toMatchObject({ uploaded: 'ricevuta.pdf', data: { attachment_token: 'tok123' } });
     expect(fic.calls.at(-1)!.headers['content-type']).toBeUndefined();
     expect(fic.calls.at(-1)!.body).toEqual({ form: ['filename', 'attachment'] });

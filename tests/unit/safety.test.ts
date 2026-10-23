@@ -26,6 +26,16 @@ describe('config', () => {
     expect(c.warnings.some((w) => w.includes('FIC_COMPANY_ID'))).toBe(true);
   });
 
+  it('legge il metodo di conferma umana e ricade su auto', () => {
+    expect(loadConfig({}).confirmMethod).toBe('auto');
+    expect(loadConfig({ FIC_CONFIRM_METHOD: 'Dialog' }).confirmMethod).toBe('dialog');
+    const bad = loadConfig({ FIC_CONFIRM_METHOD: 'token' });
+    expect(bad.confirmMethod).toBe('auto');
+    expect(bad.warnings[0]).toContain('FIC_CONFIRM_METHOD');
+    expect(loadConfig({ FIC_DOWNLOAD_RETENTION_DAYS: '30' }).downloadRetentionDays).toBe(30);
+    expect(loadConfig({}).downloadRetentionDays).toBeUndefined();
+  });
+
   it('ordina le modalità', () => {
     expect(modeAllows('readonly', 'write')).toBe(false);
     expect(modeAllows('write', 'write')).toBe(true);
@@ -96,6 +106,22 @@ describe('token di conferma', () => {
   it('ignora l’ordine delle chiavi', () => {
     const t = svc.issue('HOOK', 'SUB1', 's', { b: 2, a: [1, { y: 1, x: 2 }] });
     expect(() => svc.verify(t, 'HOOK', 'SUB1', 's', { a: [1, { x: 2, y: 1 }], b: 2 })).not.toThrow();
+  });
+
+  it('la verifica non consuma il token: lo consuma solo l’esecuzione, una volta', () => {
+    const t = svc.issue('DOC', 'new-invoice', '', { x: 1 });
+    svc.verify(t, 'DOC', 'new-invoice', '', { x: 1 });
+    svc.verify(t, 'DOC', 'new-invoice', '', { x: 1 });
+    svc.consume(t);
+    expect(() => svc.consume(t)).toThrow(/già stato usato/);
+    expect(() => svc.verify(t, 'DOC', 'new-invoice', '', { x: 1 })).toThrow(/già stato usato/);
+  });
+
+  it('la firma dello stato dipende dal segreto e dal testo', () => {
+    const other = new ConfirmService({ secret: Buffer.alloc(32, 2), now: () => now });
+    expect(svc.sign('a')).toBe(svc.sign('a'));
+    expect(svc.sign('a')).not.toBe(svc.sign('b'));
+    expect(svc.sign('a')).not.toBe(other.sign('a'));
   });
 });
 

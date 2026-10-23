@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLIENT_BIANCHI, CLIENT_ROSSI, invoice, page, payment } from '../fixtures/issued.js';
-import { call, connect, testApp } from '../helpers/app.js';
+import { call, connect, previewAndRun, testApp } from '../helpers/app.js';
 import { FakeFic } from '../helpers/fake-fetch.js';
 
 describe('fic_search_entities e fic_get_entity', () => {
@@ -56,11 +56,12 @@ describe('fic_create_entity e fic_update_entity', () => {
         body: { data: { id: 600, ...(c.body as { data: object }).data } },
       }));
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_create_entity', {
+    const { preview, done: res } = await previewAndRun(await connect(app), 'fic_create_entity', {
       name: 'Nuovo Cliente 😀',
       email: 'nuovo@example.com',
     });
-    expect(res.isError).toBe(false);
+    expect(preview.data).toMatchObject({ dry_run: true, created: false });
+    expect(res.isError, res.text).toBe(false);
     expect((fic.calls.at(-1)!.body as { data: { name: string } }).data.name).toBe('Nuovo Cliente');
     expect(res.data).toMatchObject({ created: true, id: 600 });
   });
@@ -71,7 +72,11 @@ describe('fic_create_entity e fic_update_entity', () => {
       .on('GET', '/c/1001/entities/clients/501', { body: { data: CLIENT_ROSSI } })
       .on('PUT', '/c/1001/entities/clients/501', { body: { data: { ...CLIENT_ROSSI, ei_code: 'ABC1234' } } });
     const { app } = testApp({ fic, mode: 'write' });
-    const res = await call(await connect(app), 'fic_update_entity', { id: 501, ei_code: 'ABC1234' });
+    const { preview, done: res } = await previewAndRun(await connect(app), 'fic_update_entity', {
+      id: 501,
+      ei_code: 'ABC1234',
+    });
+    expect(preview.data.changes).toEqual({ ei_code: { before: '0000000', after: 'ABC1234' } });
     expect(fic.calls.at(-1)!.body).toEqual({ data: { ei_code: 'ABC1234' } });
     expect(res.data.changes).toEqual({ ei_code: { before: '0000000', after: 'ABC1234' } });
   });

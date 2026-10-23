@@ -1,8 +1,13 @@
 /** Importi: le somme si fanno in centesimi interi, mai in virgola mobile. */
 
+/**
+ * Euro in centesimi interi, arrotondando a metà per eccesso (lontano dallo zero). Si corregge prima l'errore
+ * della virgola mobile: 1.005 * 100 vale 100.49999999999999, ma l'importo è 1,005 e diventa 101 centesimi.
+ */
 export function toCents(amount: number | null | undefined): number {
   if (amount === null || amount === undefined || Number.isNaN(amount)) return 0;
-  return Math.round(amount * 100);
+  const scaled = Number((Math.abs(amount) * 100).toPrecision(12));
+  return amount < 0 ? -Math.round(scaled) : Math.round(scaled);
 }
 
 export function fromCents(cents: number): number {

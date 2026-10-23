@@ -4,6 +4,7 @@ import { FicError, refused } from '../api/errors.js';
 import { callOp } from '../api/ops.js';
 import type { DataResponse } from '../domain/types.js';
 import { untrusted } from '../safety/untrusted.js';
+import { authorize, confirmSchema, humanPrompt, type Pending, previewFields } from './confirm-flow.js';
 import { defineTool } from './define.js';
 
 interface Target {
@@ -138,9 +139,10 @@ export const deleteResource = defineTool({
   name: 'fic_delete',
   title: 'Cancella in Fatture in Cloud',
   description: `Cancella un elemento in Fatture in Cloud: documento emesso o ricevuto, cliente, fornitore, prodotto, corrispettivo, F24, documento d'archivio, movimento di prima nota, conto di saldo, metodo di pagamento, aliquota IVA, sottoscrizione webhook, allegato, oppure svuota definitivamente un documento dal cestino.
+Esiste solo con FIC_ENABLE_DELETE=true, oltre alla modalità write o full.
 Funziona in due passi:
 1. senza confirm: non cancella nulla, restituisce cosa verrebbe cancellato, se sarà recuperabile e un token;
-2. mostra l'anteprima all'utente e, solo dopo il suo sì esplicito, richiama con confirm uguale al token.
+2. mostra l'anteprima all'utente; per cancellare richiama con confirm uguale al token. Il server chiede allora la conferma direttamente all'utente: senza la sua conferma non viene cancellato nulla.
 Attenzione: cancellare una fattura lascia un buco nella numerazione.
 Deletes a resource after a preview and explicit confirmation.`,
   minMode: 'write',
@@ -150,14 +152,10 @@ Deletes a resource after a preview and explicit confirmation.`,
     id: z
       .union([z.number().int().positive(), z.string().min(1).max(60)])
       .describe('ID dell’elemento (per gli allegati: ID del documento).'),
-    confirm: z
-      .string()
-      .max(80)
-      .optional()
-      .describe('Token dell’anteprima, dopo il sì esplicito dell’utente.'),
+    confirm: confirmSchema,
   }),
   operations: Object.values(DELETE_TARGETS).flatMap((t: Target) => (t.get ? [t.del, t.get] : [t.del])),
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const target: Target = DELETE_TARGETS[args.resource];
     const client = await app.api();
     const id = String(args.id);
@@ -181,6 +179,17 @@ Deletes a resource after a preview and explicit confirmation.`,
     }
     const state = String(current?.updated_at ?? '');
     const params = { resource: args.resource };
+    const item = current ? describe(current) : { id };
+    const pending: Pending = {
+      action: 'DEL',
+      id,
+      state,
+      params,
+      prompt: humanPrompt(`Cancellazione: ${target.label}`, {
+        elemento: item,
+        dopo_la_cancellazione: target.effect,
+      }),
+    };
 
     if (!args.confirm) {
       return {
@@ -188,15 +197,13 @@ Deletes a resource after a preview and explicit confirmation.`,
         deleted: false,
         resource: args.resource,
         what: target.label,
-        item: current ? describe(current) : { id },
+        item,
         after_delete: target.effect,
-        confirm_token: app.confirm.issue('DEL', id, state, params),
-        instructions:
-          'Mostra all’utente cosa verrà cancellato. Solo se risponde sì in modo esplicito, richiama fic_delete con confirm uguale a confirm_token.',
+        ...previewFields(app, call, pending),
       };
     }
 
-    app.confirm.verify(args.confirm, 'DEL', id, state, params);
+    await authorize(app, call, args.confirm, pending);
     await callOp(client, target.del, { pathParams: { [pathParam(target.del)]: id } });
     app.cache.invalidate('issued:', 'entity:', 'ref:');
     app.log.audit('cancellazione', { resource: args.resource, id });

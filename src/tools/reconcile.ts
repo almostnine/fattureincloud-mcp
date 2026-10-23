@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { fetchAll } from '../api/paginate.js';
 import { isoDate, todayRome } from '../domain/dates.js';
 import { installmentRows } from '../domain/installments.js';
-import { buildIndex, matchKeys, matchTransaction } from '../domain/reconcile.js';
+import { buildIndex, matchAll } from '../domain/reconcile.js';
 import type { IssuedDocument } from '../domain/types.js';
 import { untrusted } from '../safety/untrusted.js';
 import { defineTool } from './define.js';
@@ -12,7 +12,7 @@ export const reconcile = defineTool({
   title: 'Riconcilia movimenti bancari e rate',
   description: `Confronta i movimenti in entrata dell'estratto conto (data, importo, causale) con le rate non pagate delle fatture e propone gli abbinamenti, con un grado di confidenza (high, medium, low) e i motivi: importo uguale a una rata o a tutto il residuo, nome del cliente o numero della fattura nella causale, data vicina alla scadenza.
 Non modifica nulla: per registrare un incasso confermato dall'utente usa fic_set_installment_status (modalità write).
-Passa i movimenti letti dal file della banca; le uscite (importi negativi) vengono ignorate.
+Passa i movimenti letti dal file della banca; le uscite (importi negativi) vengono ignorate. Ogni rata viene proposta per un solo movimento.
 Matches incoming bank transactions with unpaid installments and proposes matches with a confidence level. Read-only.`,
   minMode: 'readonly',
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -55,8 +55,8 @@ Matches incoming bank transactions with unpaid installments and proposes matches
     const rows = installmentRows(all.items, { status: 'not_paid', today });
     const tolerance = Math.round(args.tolerance * 100);
     const index = buildIndex(rows);
-    // Una rata abbinata con alta confidenza a un movimento non viene proposta per i successivi.
-    const used = new Set<string>();
+    // Una rata proposta per un movimento, con qualsiasi confidenza, non viene proposta per un altro.
+    const proposals = matchAll(args.transactions, index, tolerance);
     const results = args.transactions.map((tx, i) => {
       const base = {
         index: i + 1,
@@ -66,8 +66,7 @@ Matches incoming bank transactions with unpaid installments and proposes matches
         ref: tx.ref,
       };
       if (tx.amount <= 0) return { ...base, skipped: 'uscita o importo nullo' };
-      const matches = matchTransaction(tx, index, tolerance, used);
-      if (matches[0]?.confidence === 'high') for (const k of matchKeys(matches[0])) used.add(k);
+      const matches = proposals[i] ?? [];
       return {
         ...base,
         matches: matches.length ? matches : undefined,

@@ -69,7 +69,7 @@ describe('duplicazione', () => {
     expect(shiftedInstallments(invoice({ type: 'quote', payments_list: [] }), '2026-03-01', 100)).toEqual([]);
   });
 
-  it('copia sconti sul totale, imponibili, dati SDI ed extra_data, senza gli stati di invio', () => {
+  it('copia sconti sul totale, imponibili ed extra_data, senza stati di invio né dati FatturaPA grezzi', () => {
     const src = invoice({
       amount_due_discount: -50,
       amount_withholding_tax_taxable: 80,
@@ -86,7 +86,8 @@ describe('duplicazione', () => {
     }) as Record<string, unknown>;
     expect(body.amount_due_discount).toBe(-50);
     expect(body.amount_withholding_tax_taxable).toBe(80);
-    expect(body.ei_raw).toEqual({ DatiGenerali: { Causale: 'x' } });
+    // ei_raw può contenere l'IBAN (DettaglioPagamento): non si copia.
+    expect(body).not.toHaveProperty('ei_raw');
     expect(body.extra_data).toEqual({ ts_communication: true });
     // l'importo imponibile della cassa si imposta solo se la percentuale è nulla
     expect(body).not.toHaveProperty('amount_cassa_taxable');

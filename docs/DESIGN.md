@@ -209,7 +209,7 @@ Annotation: R = `readOnlyHint`, D = `destructiveHint`, I = `idempotentHint`, O =
 
 | Tool | Cosa fa | R | D | I | O |
 |---|---|---|---|---|---|
-| `fic_send_einvoice` | invio allo SDI; senza conferma restituisce l'anteprima e l'esito della prova di invio (`options.dry_run` dell'API) | no | sì | no | sì |
+| `fic_send_einvoice` | invio allo SDI; senza conferma restituisce l'anteprima con la sola verifica dell'XML (l'endpoint di invio non si chiama mai in anteprima) | no | sì | no | sì |
 | `fic_send_email` | invio del documento per email; senza conferma restituisce l'anteprima con mittente, destinatari, oggetto e testo | no | sì | no | sì |
 
 Note sulle annotation:
@@ -223,33 +223,41 @@ Note sulle annotation:
 | Modalità | Tool registrati | Scope consigliati per il token |
 |---|---|---|
 | `readonly` (default) | solo lettura | solo `:r` |
-| `write` | lettura + scrittura, cancellazioni con conferma | `:r` e `:a` sulle risorse da modificare |
+| `write` | lettura + scrittura, ogni scrittura con conferma umana; cancellazioni solo con `FIC_ENABLE_DELETE=true` | `:r` e `:a` sulle risorse da modificare |
 | `full` | tutto, compresi invio SDI, email e webhook | come `write` (lo scope per l'invio SDI non è documentato: `issued_documents.invoices:a` è il candidato da verificare) |
 
 - Valore mancante o non riconosciuto di `FIC_MODE`: si parte in `readonly` e si scrive un avviso su stderr. Mai il contrario.
-- `FIC_EXTRA_TOOLS` (dalla 1.1.0) attiva singoli tool di modalità `write` in aggiunta a quelli della modalità, per esempio solo `fic_create_entity` in `readonly`. I tool di invio (`full`) non si attivano mai uno per uno; nomi sconosciuti vengono ignorati con un avviso.
+- `FIC_EXTRA_TOOLS` (introdotto nella 1.1.0) dalla 1.2.0 è un elenco chiuso che non comprende mai `fic_api_write`, `fic_delete` né gli invii, ed è ignorato in `readonly` per tutto ciò che scrive: la sola lettura resta sola lettura. In pratica non abilita più nulla; resta letto solo per avvisare nei log.
+- `fic_delete` si registra solo con `FIC_ENABLE_DELETE=true`, oltre alla modalità `write` o `full`.
 - Doppio controllo: i tool non ammessi non vengono registrati, e ogni handler verifica di nuovo la modalità prima di chiamare l'API. I tool generici controllano la classe di effetto della singola operazione.
 - La modalità del server non sostituisce gli scope del token: con un token `:r` anche la modalità `full` fallisce sulle scritture, con un messaggio che spiega quale scope manca.
 
-### 3.5 Conferma delle azioni irreversibili
+### 3.5 Conferma delle scritture e delle azioni irreversibili
 
-Si applica a: invio SDI, invio email, cancellazioni, operazioni sui webhook.
+Dalla 1.2.0 si applica a ogni scrittura: creazione, modifica, duplicazione e conversione di documenti, stato delle rate, anagrafiche, `fic_api_write`, cancellazioni, invio SDI, email, webhook.
 
-1. Il tool chiamato **senza** `confirm` non esegue nulla: restituisce un'anteprima (documento, cliente, importo, destinatari, esito della verifica XML o della prova di invio, recuperabile dal cestino sì o no) e un token del tipo `SDI-12345-7f3a9c`.
-2. Il token contiene l'ID del documento ed è un HMAC, con un segreto casuale generato all'avvio del processo, di azione, ID, `updated_at` del documento e parametri. Scade dopo 10 minuti. Il modello non può fabbricarlo.
-3. Il tool chiamato **con** `confirm` ricalcola il token: se il documento è cambiato, se i parametri sono diversi (per esempio un altro destinatario email) o se il token è scaduto, rifiuta e chiede una nuova anteprima.
-4. Le descrizioni dei tool chiedono al modello di mostrare l'anteprima all'utente e di attendere un sì esplicito prima di usare il token.
+1. Il tool chiamato senza `confirm` (o con `dry_run: true`, il default per documenti, rate e anagrafiche) non scrive nulla: restituisce l'anteprima, il testo esatto che la persona dovrà confermare (`confirmation_text`), il canale di conferma che verrà usato e un token del tipo `DOC-new-invoice-k3x9ab-7f3a9c2e1d`.
+2. Il token è un HMAC, con un segreto casuale generato all'avvio del processo, di azione, ID, stato della risorsa (`updated_at`) e corpo esatto da inviare. Scade dopo 10 minuti e vale una volta. Il modello non può fabbricarlo, ma lo riceve: per questo non basta.
+3. Il tool chiamato con `confirm` (e `dry_run: false`) ricalcola il corpo e verifica il token: se il documento è cambiato, se il corpo è diverso o se il token è scaduto o già usato, rifiuta senza disturbare la persona.
+4. Poi chiede la **conferma umana fuori banda** (`src/safety/human.ts`), con il testo dell'anteprima:
+   - elicitation MCP se il client l'ha dichiarata: sull'era 2025 una richiesta `elicitation/create` dal server al client; sull'era 2026-07-28 un risultato `input_required` con uno stato firmato (HMAC del token e del testo), che il client soddisfa chiedendo alla persona e poi ripetendo la chiamata. Il modulo ha una sola casella booleana "Confermo": vale solo `accept` con la casella spuntata;
+   - altrimenti, su macOS, una finestra `display dialog` via osascript con "Annulla" come pulsante predefinito e di annullamento, chiusura automatica dopo 120 secondi; il testo passa come argomento (`on run argv`), mai dentro lo script;
+   - altrimenti rifiuto con spiegazione.
+   `FIC_CONFIRM_METHOD` (`auto`, `elicitation`, `dialog`) forza un canale.
+5. Solo dopo il sì il token viene consumato e la richiesta parte. Rifiuto, annullamento, finestra scaduta: nessuna richiesta di scrittura.
 
-Il token non sostituisce l'utente: garantisce che l'azione eseguita sia esattamente quella mostrata in anteprima. L'approvazione umana resta affidata a Claude Desktop, che chiede il permesso per i tool con `destructiveHint: true`; nel README si sconsiglia "consenti sempre" per i tool di invio e di cancellazione.
+Il token garantisce che si esegua esattamente ciò che è stato mostrato; la conferma umana è l'autorizzazione. `destructiveHint: true` resta come livello in più (Claude Desktop chiede il permesso per la chiamata), e nel README si sconsiglia "consenti sempre".
 
 Difese aggiuntive contro l'esfiltrazione:
 - **email**: destinatari ammessi solo tra gli indirizzi del cliente in anagrafica (`email`, `certified_email`) e quelli che FIC propone per il documento, più un elenco esplicito facoltativo (`FIC_EMAIL_ALLOWED_RECIPIENTS`). Un indirizzo diverso viene rifiutato anche con conferma valida. È la difesa contro un'istruzione nascosta in una fattura passiva che chiede di mandare documenti altrove;
 - **webhook**: creazione, modifica e verifica solo in modalità `full` e con conferma, perché fanno arrivare notifiche dell'azienda a un URL esterno;
 - **conto di saldo**: quando si segna una rata pagata il conto va indicato o configurato come default; il server non sceglie mai "il primo della lista".
 
-### 3.6 Elicitation
+### 3.6 Elicitation e coordinate bancarie
 
-La spec 2026-07-28 consente al server di chiedere una conferma direttamente all'utente (`input_required`), ma il supporto in Claude Desktop non è documentato (ANALISI.md, sezione 4). Prima versione: conferma con token più `destructiveHint`. Se il client dichiara il supporto, la richiesta di conferma diretta si aggiunge come livello in più, mai come unica difesa.
+L'elicitation è usata dalla 1.2.0 come canale principale della conferma umana (sezione 3.5), su entrambe le ere del protocollo. Se Claude Desktop non dichiara la capability, su macOS si ripiega sulla finestra di sistema; altrove la scrittura viene rifiutata.
+
+Coordinate bancarie (`src/safety/bank.ts`): un account è già stato bloccato da Fatture in Cloud per "tentativo di inserimento di un IBAN non autorizzato" da una fattura creata via API. Regola semplice, senza eccezioni: nessun corpo in uscita contiene chiavi bancarie (`iban`, `bank_*`, BIC, ABI, CAB, beneficiario, anche in `ei_raw`) né testi con la forma di un IBAN (forma compatta, a gruppi di quattro, o spaziatura qualsiasi con lunghezza del paese e cifre di controllo valide). Il controllo è nel client HTTP, quindi vale per tutti i tool; duplicazione, conversione e modifica tolgono prima le coordinate copiate dal documento d'origine e del metodo di pagamento mandano solo l'`id`.
 
 ## 4. Formato degli output
 

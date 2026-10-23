@@ -13,8 +13,17 @@ import {
 import { isoDate, todayRome } from '../domain/dates.js';
 import { displayNumber, issuedSummary } from '../domain/documents.js';
 import type { DataResponse, Entity, IssuedDocument, Item, PaymentItem } from '../domain/types.js';
+import { stripBankKeys } from '../safety/bank.js';
 import { cleanOutgoingText } from '../safety/untrusted.js';
 import { docTypeSchema } from './common.js';
+import {
+  authorize,
+  confirmSchema,
+  dryRunSchema,
+  humanPrompt,
+  type Pending,
+  previewFields,
+} from './confirm-flow.js';
 import { defineTool } from './define.js';
 import { getEntity } from './entities.js';
 import { getIssued } from './issued-documents.js';
@@ -141,6 +150,76 @@ function totalsView(t: Totals) {
   };
 }
 
+const DOC_LABEL: Record<string, string> = {
+  invoice: 'fattura',
+  credit_note: 'nota di credito',
+  proforma: 'proforma',
+  quote: 'preventivo',
+  order: 'ordine',
+  delivery_note: 'DDT',
+  receipt: 'ricevuta',
+  work_report: 'rapportino',
+  supplier_order: 'ordine a fornitore',
+  self_own_invoice: 'autofattura',
+  self_supplier_invoice: 'autofattura',
+};
+
+const label = (type: string | null | undefined) => DOC_LABEL[type ?? ''] ?? type ?? 'documento';
+const EXECUTE_HINT = 'dry_run: false e confirm uguale a confirm_token';
+
+/** Riepilogo leggibile del corpo che verrà inviato: è il testo che la persona conferma. */
+function docSummary(
+  doc: IssuedDocument,
+  t: Totals,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const number =
+    doc.number !== undefined && doc.number !== null
+      ? `${doc.number}${doc.numeration ?? ''}`
+      : `successivo disponibile${doc.numeration ? ` del sezionale ${doc.numeration}` : ''}`;
+  return {
+    ...extra,
+    tipo: label(doc.type),
+    cliente: doc.entity
+      ? `${doc.entity.name ?? '?'}${doc.entity.id ? ` (ID ${doc.entity.id})` : ''}`
+      : undefined,
+    data: doc.date,
+    numero: number,
+    fattura_elettronica: doc.e_invoice ? 'sì' : 'no',
+    metodo_di_pagamento: doc.payment_method?.id
+      ? `ID ${doc.payment_method.id} (coordinate dal metodo configurato in Fatture in Cloud)`
+      : undefined,
+    modalita_sdi: (doc.ei_data as { payment_method?: string } | undefined)?.payment_method,
+    oggetto: doc.visible_subject,
+    oggetto_interno: doc.subject,
+    note: doc.notes,
+    righe: (doc.items_list ?? []).map(
+      (it) =>
+        `${it.name ?? ''}: ${it.qty ?? 1} x ${doc.use_gross_prices ? `${it.gross_price} IVA inclusa` : `${it.net_price} + IVA`} (aliquota ID ${it.vat?.id ?? '?'})${it.discount ? `, sconto ${it.discount}%` : ''}`,
+    ),
+    totali: {
+      imponibile: t.amount_net,
+      iva: t.amount_vat,
+      totale: t.amount_gross,
+      bollo: t.stamp_duty || undefined,
+      ritenuta: t.amount_withholding_tax || undefined,
+      da_pagare: t.amount_due,
+    },
+    rate: (doc.payments_list ?? []).map((p) => `scadenza ${p.due_date}: ${p.amount}`),
+  };
+}
+
+/**
+ * Documento che arriva da Fatture in Cloud (conversione, totali di una modifica): del metodo di pagamento resta solo l'id e si tolgono le
+ * chiavi bancarie ovunque (ei_data.bank_iban, payment_account.iban, dati FatturaPA...).
+ */
+function withoutBankData(doc: IssuedDocument): IssuedDocument {
+  const out = stripBankKeys(doc);
+  if (doc.payment_method?.id) out.payment_method = { id: doc.payment_method.id };
+  else delete out.payment_method;
+  return out;
+}
+
 async function create(
   app: AppContext,
   data: IssuedDocument,
@@ -160,9 +239,10 @@ export const createIssuedDocument = defineTool({
   title: 'Crea documento emesso',
   description: `Crea una fattura, nota di credito, proforma, preventivo, ordine, DDT o altro documento emesso per un cliente esistente. Totali e IVA li calcola Fatture in Cloud; le rate si indicano con installments (scadenze ed eventuali importi) oppure con installments_count e payment_terms_days.
 Il documento nasce come bozza in Fatture in Cloud: non viene inviato allo SDI né per email (servono fic_send_einvoice e fic_send_email, in modalità full).
-Con dry_run: true restituisce l'anteprima con totali e rate senza creare nulla: usalo prima di creare e mostra l'anteprima all'utente.
+Prima chiamata (dry_run default true): anteprima con totali e rate e un token, senza creare nulla. Mostrala all'utente; per creare ripeti con gli stessi parametri, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente, senza la quale non crea nulla.
+Coordinate bancarie: il documento usa solo il metodo di pagamento (payment_method_id) configurato in Fatture in Cloud; un IBAN in note, oggetto o righe viene rifiutato.
 Aliquote: indica vat_id (elenco con fic_reference_data, list "vat_types"); se manca si usa l'aliquota predefinita del cliente o dell'azienda (per un forfettario è di solito l'aliquota a zero con natura N2.2).
-Creates an issued document; use dry_run to preview totals and installments first.`,
+Creates an issued document: preview first, then token plus out-of-band human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   input: z.object({
@@ -228,7 +308,8 @@ Creates an issued document; use dry_run to preview totals and installments first
       .describe('Solo note di credito: numero della fattura stornata.'),
     related_invoice_date: isoDate.optional().describe('Solo note di credito: data della fattura stornata.'),
     revenue_center: z.string().max(100).optional(),
-    dry_run: z.boolean().default(false).describe('Anteprima senza creare nulla.'),
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
   }),
   operations: [
     'getClient',
@@ -237,7 +318,7 @@ Creates an issued document; use dry_run to preview totals and installments first
     'createIssuedDocument',
   ],
   docTypeOf: (a) => a.type,
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const entity: Entity = await getEntity(app, 'client', args.client_id);
     const info = await preCreateInfo(app, args.type);
     const date = args.date ?? todayRome(app.now());
@@ -309,14 +390,17 @@ Creates an issued document; use dry_run to preview totals and installments first
       })),
       notes: notesOut.length ? notesOut : undefined,
     };
-    if (args.dry_run)
-      return {
-        dry_run: true,
-        created: false,
-        preview,
-        next_step: 'Mostra l’anteprima all’utente; se conferma, ripeti con dry_run: false.',
-      };
+    const pending: Pending = {
+      action: 'DOC',
+      id: `new-${args.type}`,
+      state: '',
+      params: doc,
+      prompt: humanPrompt(`Crea ${label(args.type)}`, docSummary(doc, t)),
+    };
+    if (args.dry_run || !args.confirm)
+      return { dry_run: true, created: false, preview, ...previewFields(app, call, pending, EXECUTE_HINT) };
 
+    await authorize(app, call, args.confirm, pending);
     const created = await create(app, doc);
     return {
       created: true,
@@ -334,7 +418,8 @@ export const updateIssuedDocument = defineTool({
   title: 'Modifica documento emesso',
   description: `Modifica un documento emesso: oggetto, note, data, metodo di pagamento, righe (sostituite in blocco) o rate. I campi non indicati restano invariati; stato di pagamento e conti delle rate sono preservati quando non si toccano righe o rate.
 Rifiuta i documenti bloccati (di solito già inviati allo SDI) e la modifica di righe o rate quando ci sono rate già pagate.
-Updates an issued document, preserving installment status.`,
+Prima chiamata (dry_run default true): anteprima delle modifiche e token. Per salvare ripeti con gli stessi parametri, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente. Le coordinate bancarie dei dati SDI non vengono mai reinviate.
+Updates an issued document, preserving installment status; preview, then human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
@@ -359,9 +444,11 @@ Updates an issued document, preserving installment status.`,
       .max(24)
       .optional()
       .describe('Nuove rate: sostituiscono quelle esistenti.'),
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
   }),
   operations: ['getIssuedDocument', 'getExistingIssuedDocumentTotals', 'modifyIssuedDocument'],
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const doc = await getIssued(app, args.document_id);
     if (doc.locked)
       throw refused(
@@ -396,7 +483,8 @@ Updates an issued document, preserving installment status.`,
       changed.push('payment_method');
     }
     if (args.ei_payment_method) {
-      data.ei_data = { ...(doc.ei_data ?? {}), payment_method: args.ei_payment_method };
+      // Si reinviano i dati SDI esistenti (l'oggetto viene sostituito per intero), ma senza coordinate bancarie.
+      data.ei_data = { ...stripBankKeys(doc.ei_data ?? {}), payment_method: args.ei_payment_method };
       changed.push('ei_payment_method');
     }
     let t: Totals | undefined;
@@ -407,11 +495,11 @@ Updates an issued document, preserving installment status.`,
       changed.push('items');
     }
     if (args.items || args.installments) {
-      t = await totals(
-        app,
-        { ...doc, ...data, payments_list: undefined } as IssuedDocument,
-        args.document_id,
-      );
+      // Per il calcolo dei totali basta il documento senza coordinate bancarie e senza i testi non modificati.
+      const base = withoutBankData({ ...doc, ...data, payments_list: undefined } as IssuedDocument);
+      for (const k of ['notes', 'subject', 'visible_subject'] as const)
+        if (data[k] === undefined) delete base[k];
+      t = await totals(app, base, args.document_id);
       if (t.amount_due !== undefined && t.amount_due !== null && hasPayments(doc.type ?? 'invoice')) {
         data.payments_list = args.installments?.length
           ? explicitInstallments(t.amount_due, args.installments)
@@ -420,6 +508,41 @@ Updates an issued document, preserving installment status.`,
       }
     }
     if (changed.length === 0) throw refused('Nessuna modifica indicata.');
+    const pending: Pending = {
+      action: 'DOC',
+      id: args.document_id,
+      state: String(doc.updated_at ?? ''),
+      params: data,
+      prompt: humanPrompt(`Modifica ${label(doc.type)} n. ${displayNumber(doc) ?? '?'}`, {
+        documento: `${label(doc.type)} n. ${displayNumber(doc) ?? '?'} del ${doc.date ?? '?'} (ID ${args.document_id})`,
+        cliente: doc.entity?.name ?? undefined,
+        campi_modificati: changed.join(', '),
+        nuovi_valori: {
+          data: data.date,
+          oggetto: data.visible_subject,
+          oggetto_interno: data.subject,
+          note: data.notes,
+          metodo_di_pagamento: data.payment_method?.id ? `ID ${data.payment_method.id}` : undefined,
+          modalita_sdi: args.ei_payment_method,
+          righe: data.items_list?.map(
+            (it) =>
+              `${it.name ?? ''}: ${it.qty ?? 1} x ${it.net_price ?? it.gross_price} (aliquota ID ${it.vat?.id ?? '?'})`,
+          ),
+          rate: data.payments_list?.map((p) => `scadenza ${p.due_date}: ${p.amount}`),
+        },
+        totali: t ? totalsView(t) : undefined,
+      }),
+    };
+    if (args.dry_run || !args.confirm) {
+      return {
+        dry_run: true,
+        updated: false,
+        changed,
+        totals: t ? totalsView(t) : undefined,
+        ...previewFields(app, call, pending, EXECUTE_HINT),
+      };
+    }
+    await authorize(app, call, args.confirm, pending);
     const res = await callOp<DataResponse<IssuedDocument>>(await app.api(), 'modifyIssuedDocument', {
       pathParams: { document_id: args.document_id },
       body: { data, options: { fix_payments: true } },
@@ -446,8 +569,9 @@ export const convertIssuedDocument = defineTool({
   name: 'fic_convert_issued_document',
   title: 'Converti documento (es. proforma in fattura)',
   description: `Converte un documento in un altro tipo con la funzione ufficiale di Fatture in Cloud, che mantiene il collegamento tra i due: proforma in fattura o ricevuta; preventivo o rapportino in ordine, proforma, ricevuta o fattura; ordine in proforma, ricevuta o fattura.
-Default: l'originale resta. Con keep_copy: false Fatture in Cloud elimina l'originale: in quel caso la prima chiamata restituisce un'anteprima e un token, e la conversione avviene solo richiamando con confirm dopo il sì esplicito dell'utente.
-Converts a document (e.g. proforma to invoice) keeping the link between documents.`,
+Default: l'originale resta. Con keep_copy: false Fatture in Cloud elimina l'originale.
+Prima chiamata (dry_run default true): anteprima del nuovo documento e token, senza creare nulla. Per convertire ripeti con gli stessi parametri, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente.
+Converts a document (e.g. proforma to invoice) keeping the link between documents; preview, then human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   input: z.object({
@@ -461,15 +585,12 @@ Converts a document (e.g. proforma to invoice) keeping the link between document
     date: isoDate
       .optional()
       .describe('Data del nuovo documento; default quella proposta da Fatture in Cloud.'),
-    confirm: z
-      .string()
-      .max(80)
-      .optional()
-      .describe('Solo con keep_copy: false. Token dell’anteprima, dopo il sì esplicito dell’utente.'),
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
   }),
   operations: ['getIssuedDocument', 'transformIssuedDocument', 'createIssuedDocument'],
   docTypeOf: (a) => a.new_type,
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const src = await getIssued(app, args.document_id);
     const allowed = TRANSFORMS[src.type ?? ''] ?? [];
     if (!allowed.includes(args.new_type)) {
@@ -477,32 +598,10 @@ Converts a document (e.g. proforma to invoice) keeping the link between document
         `Un documento di tipo ${src.type} non si può convertire in ${args.new_type}. Conversioni ammesse: ${allowed.join(', ') || 'nessuna'}.`,
       );
     }
-    if (!args.keep_copy) {
-      // Eliminare l'originale è irreversibile: stessa protezione delle cancellazioni.
-      const state = String(src.updated_at ?? '');
-      const params = {
-        new_type: args.new_type,
-        keep_copy: false,
-        e_invoice: args.e_invoice ?? null,
-        date: args.date ?? null,
-      };
-      if (!args.confirm) {
-        return {
-          preview: true,
-          converted: false,
-          from: { id: src.id, type: src.type, number: displayNumber(src), date: src.date },
-          new_type: args.new_type,
-          warning: 'Il documento originale verrà eliminato da Fatture in Cloud dopo la conversione.',
-          confirm_token: app.confirm.issue('DEL', args.document_id, state, params),
-          instructions:
-            'Mostra l’anteprima all’utente; solo dopo il suo sì esplicito richiama con gli stessi parametri e confirm.',
-        };
-      }
-      app.confirm.verify(args.confirm, 'DEL', args.document_id, state, params);
-    }
     const eInvoice =
       args.e_invoice ??
       (args.new_type === 'invoice' ? Boolean(src.e_invoice || src.entity?.e_invoice) : false);
+    // transform è una lettura: prepara il nuovo documento senza crearlo.
     const res = await callOp<{ data?: IssuedDocument; options?: Record<string, unknown> }>(
       await app.api(),
       'transformIssuedDocument',
@@ -517,12 +616,44 @@ Converts a document (e.g. proforma to invoice) keeping the link between document
       },
     );
     if (!res?.data) throw refused('Fatture in Cloud non ha restituito il documento convertito.');
-    const data = { ...res.data, ...(args.date ? { date: args.date } : {}) };
+    const data = withoutBankData({ ...res.data, ...(args.date ? { date: args.date } : {}) });
+    const from = { id: src.id, type: src.type, number: displayNumber(src), date: src.date };
+    const pending: Pending = {
+      action: 'DOC',
+      id: `convert-${args.document_id}`,
+      state: String(src.updated_at ?? ''),
+      params: {
+        new_type: args.new_type,
+        keep_copy: args.keep_copy,
+        e_invoice: eInvoice,
+        date: args.date ?? null,
+      },
+      prompt: humanPrompt(
+        `Converti ${label(src.type)} n. ${displayNumber(src) ?? '?'} in ${label(args.new_type)}`,
+        docSummary(data, data as Totals, {
+          origine: `${label(src.type)} n. ${displayNumber(src) ?? '?'} del ${src.date ?? '?'} (ID ${args.document_id})`,
+          documento_originale: args.keep_copy ? 'resta' : 'VIENE ELIMINATO da Fatture in Cloud',
+        }),
+      ),
+    };
+    if (args.dry_run || !args.confirm) {
+      return {
+        dry_run: true,
+        converted: false,
+        from,
+        new_type: args.new_type,
+        warning: args.keep_copy
+          ? undefined
+          : 'Il documento originale verrà eliminato da Fatture in Cloud dopo la conversione.',
+        ...previewFields(app, call, pending, EXECUTE_HINT),
+      };
+    }
+    await authorize(app, call, args.confirm, pending);
     // La sezione options va reinviata intatta (https://developers.fattureincloud.it/docs/guides/invoice-join-transform/).
     const created = await create(app, data, res.options ?? {});
     return {
       converted: true,
-      from: { id: src.id, type: src.type, number: displayNumber(src), kept: args.keep_copy },
+      from: { ...from, kept: args.keep_copy },
       document: issuedSummary(created, todayRome(app.now())),
     };
   },
@@ -532,8 +663,9 @@ export const duplicateIssuedDocument = defineTool({
   name: 'fic_duplicate_issued_document',
   title: 'Duplica documento',
   description: `Duplica un documento emesso con una nuova data: copia cliente (dati aggiornati dall'anagrafica), righe con le stesse aliquote, sconti, ritenute, cassa, bollo, metodo di pagamento e sezionale; rigenera numero, rate (stesse distanze e proporzioni) e campi SDI. Totali calcolati da Fatture in Cloud.
-replace_text sostituisce testi in oggetto, note e righe (per esempio "settembre" -> "ottobre"). Con dry_run: true mostra l'anteprima senza creare.
-Duplicates an issued document with a new date, optional text replacements and recalculated installments.`,
+replace_text sostituisce testi in oggetto, note e righe (per esempio "settembre" -> "ottobre"). Non copia mai coordinate bancarie: del metodo di pagamento copia solo l'id.
+Prima chiamata (dry_run default true): anteprima e token, senza creare nulla. Per creare la copia ripeti con gli stessi parametri, dry_run: false e confirm: il server chiede allora la conferma direttamente all'utente.
+Duplicates an issued document with a new date, optional text replacements and recalculated installments; preview, then human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   input: z.object({
@@ -544,10 +676,11 @@ Duplicates an issued document with a new date, optional text replacements and re
       .max(10)
       .default([]),
     keep_numeration: z.boolean().default(true).describe('Usa lo stesso sezionale dell’originale.'),
-    dry_run: z.boolean().default(false),
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
   }),
   operations: ['getIssuedDocument', 'getClient', 'getNewIssuedDocumentTotals', 'createIssuedDocument'],
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const src = await getIssued(app, args.document_id);
     const date = args.date ?? todayRome(app.now());
     if (!src.entity) throw refused('Il documento originale non ha un cliente: non si può duplicare.');
@@ -578,7 +711,21 @@ Duplicates an issued document with a new date, optional text replacements and re
       installments: (body.payments_list ?? []).map((p) => ({ due_date: p.due_date, amount: p.amount })),
       note: entityNote,
     };
-    if (args.dry_run) return { dry_run: true, created: false, preview };
+    const pending: Pending = {
+      action: 'DOC',
+      id: `dup-${args.document_id}`,
+      state: String(src.updated_at ?? ''),
+      params: body,
+      prompt: humanPrompt(
+        `Duplica ${label(src.type)} n. ${displayNumber(src) ?? '?'}`,
+        docSummary(body, t, {
+          origine: `${label(src.type)} n. ${displayNumber(src) ?? '?'} del ${src.date ?? '?'} (ID ${args.document_id})`,
+        }),
+      ),
+    };
+    if (args.dry_run || !args.confirm)
+      return { dry_run: true, created: false, preview, ...previewFields(app, call, pending, EXECUTE_HINT) };
+    await authorize(app, call, args.confirm, pending);
     const created = await create(app, body);
     return { created: true, document: issuedSummary(created, todayRome(app.now())), preview };
   },

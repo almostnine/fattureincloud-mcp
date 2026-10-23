@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import { AppContext } from '../../src/context.js';
 import { createLogger } from '../../src/log.js';
-import { call, connect, type ToolCall } from '../helpers/app.js';
+import { call, connect, previewAndRun, type ToolCall } from '../helpers/app.js';
 import { loadDotEnv } from './env.js';
 
 loadDotEnv();
@@ -21,6 +21,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
     ...loadConfig({ FIC_ACCESS_TOKEN: token, FIC_COMPANY_ID: String(companyId) }),
     mode: 'full' as const,
     cache: 'off' as const,
+    enableDelete: true,
   };
   const app = new AppContext({ config, log: createLogger('warn', [token]) });
   const created: Array<{ resource: string; id: number }> = [];
@@ -29,6 +30,12 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
   const run = async (name: string, args: Record<string, unknown>): Promise<ToolCall> => {
     if (!ready) throw new Error('Guardia non superata: nessuna scrittura.');
     return call(await connect(app), name, args);
+  };
+  // Dalla 1.2.0 ogni scrittura è anteprima + token + conferma umana: chi lancia il test conferma nella
+  // finestra di dialogo del Mac (o nell'elicitation del client).
+  const exec = async (name: string, args: Record<string, unknown>): Promise<ToolCall> => {
+    if (!ready) throw new Error('Guardia non superata: nessuna scrittura.');
+    return (await previewAndRun(await connect(app), name, args)).done;
   };
 
   beforeAll(async () => {
@@ -46,9 +53,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
   afterAll(async () => {
     if (!ready) return;
     for (const c of created.reverse()) {
-      const preview = await run('fic_delete', { resource: c.resource, id: c.id });
-      if (!preview.isError)
-        await run('fic_delete', { resource: c.resource, id: c.id, confirm: preview.data.confirm_token });
+      await exec('fic_delete', { resource: c.resource, id: c.id });
     }
   });
 
@@ -57,7 +62,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
   let accountId = 0;
 
   it('crea un cliente di prova', async () => {
-    const r = await run('fic_create_entity', {
+    const r = await exec('fic_create_entity', {
       name: `Cliente Test MCP ${Date.now()}`,
       email: 'cliente.test@example.com',
       type: 'company',
@@ -76,7 +81,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
     };
     const dry = await run('fic_create_issued_document', { ...args, dry_run: true });
     expect(dry.isError, dry.text).toBe(false);
-    const r = await run('fic_create_issued_document', args);
+    const r = await exec('fic_create_issued_document', args);
     expect(r.isError, r.text).toBe(false);
     invoiceId = (r.data.document as { id: number }).id;
     created.push({ resource: 'issued_document', id: invoiceId });
@@ -86,7 +91,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
     const accounts = await run('fic_reference_data', { list: 'payment_accounts' });
     accountId = ((accounts.data.items as Array<{ id: number }>)[0] ?? { id: 0 }).id;
     expect(accountId, 'serve almeno un conto di saldo sull’account di prova').toBeGreaterThan(0);
-    const paid = await run('fic_set_installment_status', {
+    const paid = await exec('fic_set_installment_status', {
       document_id: invoiceId,
       installment: 1,
       status: 'paid',
@@ -96,7 +101,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
     const doc = await run('fic_get_issued_document', { document_id: invoiceId });
     const inst = doc.data.installments as Array<{ status: string }>;
     expect(inst.map((i) => i.status)).toEqual(['paid', 'not_paid']);
-    const unpaid = await run('fic_set_installment_status', {
+    const unpaid = await exec('fic_set_installment_status', {
       document_id: invoiceId,
       installment: 1,
       status: 'not_paid',
@@ -105,7 +110,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
   });
 
   it('duplica la fattura', async () => {
-    const r = await run('fic_duplicate_issued_document', {
+    const r = await exec('fic_duplicate_issued_document', {
       document_id: invoiceId,
       replace_text: [{ from: 'prova', to: 'prova bis' }],
     });
@@ -114,7 +119,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
   });
 
   it('crea una proforma e la converte in fattura', async () => {
-    const p = await run('fic_create_issued_document', {
+    const p = await exec('fic_create_issued_document', {
       type: 'proforma',
       client_id: clientId,
       items: [{ name: 'Proforma di prova', net_price: 50 }],
@@ -122,7 +127,7 @@ describe.runIf(enabled)('integrazione con scritture (account di prova)', () => {
     expect(p.isError, p.text).toBe(false);
     const proformaId = (p.data.document as { id: number }).id;
     created.push({ resource: 'issued_document', id: proformaId });
-    const c = await run('fic_convert_issued_document', {
+    const c = await exec('fic_convert_issued_document', {
       document_id: proformaId,
       new_type: 'invoice',
       e_invoice: false,

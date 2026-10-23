@@ -1,4 +1,5 @@
 import type { Logger } from '../log.js';
+import { assertNoBankData } from '../safety/bank.js';
 import { OPERATIONS } from './catalog.generated.js';
 import type { CatalogOperation } from './catalog-types.js';
 import { classifyHttpError, FicError } from './errors.js';
@@ -11,6 +12,11 @@ const MAX_WAIT_SECONDS = 60;
 const MAX_QUOTA_RETRIES = 2;
 const MAX_CONFLICT_RETRIES = 2;
 const MAX_TRANSIENT_RETRIES = 3;
+/** Limite per azienda: 300 richieste ogni 5 minuti (https://developers.fattureincloud.it/docs/basics/limits-and-quotas/). */
+const BUCKET_CAPACITY = 300;
+const BUCKET_WINDOW_MS = 5 * 60 * 1000;
+/** Sotto questa soglia di richieste rimaste (ora o mese) il server si ferma, per non esaurire la quota dell'azienda. */
+export const QUOTA_FLOOR = 20;
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export type QueryValue = string | number | boolean | undefined | null;
@@ -26,7 +32,7 @@ export interface RequestSpec {
   body?: unknown;
   /** Corpo multipart (caricamento allegati): alternativo a `body`. */
   form?: FormData;
-  /** Se la richiesta si può ripetere su 5xx ed errori di rete. Default: vero per GET, PUT e DELETE. */
+  /** Se la richiesta si può ripetere su 5xx, 409 di concorrenza ed errori di rete. Default: vero per GET, PUT e DELETE. */
   retrySafe?: boolean;
   /** `text` per le risposte non JSON (per esempio l'XML della fattura elettronica). */
   responseType?: 'json' | 'text';
@@ -38,6 +44,8 @@ export interface Quota {
   monthlyRemaining?: number;
   monthlyLimit?: number;
   updatedAt?: string;
+  /** Istante dell'ultimo aggiornamento, in millisecondi. */
+  updatedAtMs?: number;
 }
 
 export interface FicClientOptions {
@@ -46,6 +54,40 @@ export interface FicClientOptions {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  now?: () => number;
+}
+
+/**
+ * Secchiello di gettoni lato client: al massimo 300 richieste ogni 5 minuti per azienda, ricaricato in modo
+ * continuo. Il limite di Fatture in Cloud è condiviso con le altre app collegate: questo conta solo le nostre.
+ */
+export class TokenBucket {
+  private tokens: number;
+  private last: number;
+  private readonly perMs: number;
+
+  constructor(
+    private readonly capacity: number,
+    windowMs: number,
+    now: number,
+  ) {
+    this.tokens = capacity;
+    this.last = now;
+    this.perMs = capacity / windowMs;
+  }
+
+  /** Prenota un gettone e restituisce quanti millisecondi aspettare prima di usarlo (0 se subito). */
+  reserve(now: number): number {
+    this.tokens = Math.min(this.capacity, this.tokens + Math.max(0, now - this.last) * this.perMs);
+    this.last = now;
+    this.tokens -= 1;
+    return this.tokens >= 0 ? 0 : Math.ceil(-this.tokens / this.perMs);
+  }
+
+  /** Restituisce il gettone prenotato (richiesta non partita). */
+  release(): void {
+    this.tokens = Math.min(this.capacity, this.tokens + 1);
+  }
 }
 
 const OPS_BY_ID = new Map<string, CatalogOperation>(OPERATIONS.map((o) => [o.id, o]));
@@ -90,8 +132,9 @@ export function buildUrl(
 
 /**
  * Client HTTP per l'API v2 di Fatture in Cloud.
- * Richieste in serie (il limite di 300 richieste ogni 5 minuti è condiviso con le altre app dell'azienda),
- * retry solo dove la documentazione lo consente, errori tipizzati.
+ * Richieste in serie e limitate lato client (300 ogni 5 minuti per azienda), stop quando la quota oraria o
+ * mensile sta per finire, retry solo per le richieste ripetibili, errori tipizzati. Nessun corpo con
+ * coordinate bancarie esce dal server.
  */
 export class FicClient {
   readonly quota: Quota = {};
@@ -100,6 +143,8 @@ export class FicClient {
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
+  private readonly now: () => number;
+  private readonly buckets = new Map<string, TokenBucket>();
   private queue: Promise<unknown> = Promise.resolve();
   private companyIdValue: number | undefined;
   requestCount = 0;
@@ -110,6 +155,7 @@ export class FicClient {
     this.fetchImpl = opts.fetch ?? fetch;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.random = opts.random ?? Math.random;
+    this.now = opts.now ?? Date.now;
   }
 
   setCompanyId(id: number): void {
@@ -142,12 +188,16 @@ export class FicClient {
     }
     const url = buildUrl(spec.path, params, spec.query);
     const retrySafe = spec.retrySafe ?? spec.method !== 'POST';
+    // Difesa in profondità: nessun corpo con IBAN o altre coordinate bancarie arriva a Fatture in Cloud.
+    if (spec.body !== undefined) assertNoBankData(spec.body, spec.operationId);
 
     let quotaRetries = 0;
     let conflictRetries = 0;
     let transientRetries = 0;
 
     for (;;) {
+      this.checkQuota();
+      await this.throttle();
       const started = Date.now();
       let res: Response;
       try {
@@ -221,8 +271,10 @@ export class FicClient {
           continue;
         }
       }
+      // "Già in esecuzione": si ripete solo una richiesta ripetibile, mai una creazione (potrebbe duplicarla).
       if (
         error.kind === 'conflict' &&
+        retrySafe &&
         /already being executed|in esecuzione/i.test(error.message) &&
         conflictRetries < MAX_CONFLICT_RETRIES
       ) {
@@ -245,6 +297,53 @@ export class FicClient {
     }
   }
 
+  /** Attende il turno nel secchiello dell'azienda; oltre 60 secondi rinuncia con un errore chiaro. */
+  private async throttle(): Promise<void> {
+    const key = String(this.companyIdValue ?? 'utente');
+    let bucket = this.buckets.get(key);
+    if (!bucket) {
+      bucket = new TokenBucket(BUCKET_CAPACITY, BUCKET_WINDOW_MS, this.now());
+      this.buckets.set(key, bucket);
+    }
+    const wait = bucket.reserve(this.now());
+    if (wait === 0) return;
+    if (wait > MAX_WAIT_SECONDS * 1000) {
+      bucket.release();
+      throw new FicError(
+        'rate_limit',
+        'Limite di 300 richieste ogni 5 minuti raggiunto da questo server: richiesta non inviata.',
+        { retryAfterSeconds: Math.ceil(wait / 1000) },
+      );
+    }
+    this.log.info('limite di 300 richieste ogni 5 minuti: attendo', { ms: wait });
+    await this.sleep(wait);
+  }
+
+  /** Si ferma prima di esaurire la quota oraria o mensile dell'azienda, condivisa con le altre app. */
+  private checkQuota(): void {
+    const q = this.quota;
+    if (q.updatedAtMs === undefined) return;
+    const now = this.now();
+    if (
+      now - q.updatedAtMs < 60 * 60 * 1000 &&
+      q.hourlyRemaining !== undefined &&
+      q.hourlyRemaining < QUOTA_FLOOR
+    ) {
+      throw new FicError(
+        'refused',
+        `Quota oraria dell’API quasi esaurita: restano ${q.hourlyRemaining} richieste su ${q.hourlyLimit ?? 1000}. Il server si ferma sotto ${QUOTA_FLOOR} per non bloccare le altre app collegate all’azienda. Cosa fare: riprova tra un’ora.`,
+      );
+    }
+    const sameMonth =
+      new Date(q.updatedAtMs).toISOString().slice(0, 7) === new Date(now).toISOString().slice(0, 7);
+    if (sameMonth && q.monthlyRemaining !== undefined && q.monthlyRemaining < QUOTA_FLOOR) {
+      throw new FicError(
+        'refused',
+        `Quota mensile dell’API quasi esaurita: restano ${q.monthlyRemaining} richieste su ${q.monthlyLimit ?? 40000}. Il server si ferma sotto ${QUOTA_FLOOR} per non bloccare l’azienda fino al mese prossimo.`,
+      );
+    }
+  }
+
   private backoff(attempt: number): Promise<void> {
     const base = 500 * 2 ** (attempt - 1);
     return this.sleep(base + Math.floor(this.random() * base));
@@ -258,6 +357,7 @@ export class FicClient {
     this.quota.hourlyLimit = headerInt(h, 'ratelimit-hourlylimit');
     this.quota.monthlyRemaining = monthlyRemaining;
     this.quota.monthlyLimit = headerInt(h, 'ratelimit-monthlylimit');
-    this.quota.updatedAt = new Date().toISOString();
+    this.quota.updatedAtMs = this.now();
+    this.quota.updatedAt = new Date(this.quota.updatedAtMs).toISOString();
   }
 }

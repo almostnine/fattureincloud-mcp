@@ -23,11 +23,12 @@ const manifest = {
   version: pkg.version,
   description:
     'Fatture, rate, incassi, clienti e situazione di Fatture in Cloud dentro Claude. Sola lettura di default.',
-  long_description: `Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre tutte le 123 operazioni dell'API.
+  long_description: `Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre 117 delle 123 operazioni dell'API (conti di saldo, metodi di pagamento e recupero dal cestino restano solo nell'app web).
 
 - **Sola lettura di default**: in modalità \`readonly\` i tool di scrittura e di invio non esistono proprio.
-- **Modalità \`write\`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate, cancellazioni con anteprima e conferma.
-- **Modalità \`full\`**: anche invio allo SDI ed email, sempre con anteprima e token di conferma.
+- **Modalità \`write\`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate. Ogni scrittura parte da un'anteprima e si esegue solo dopo la tua conferma, chiesta direttamente a te (elicitation di Claude Desktop o finestra di macOS): Claude non può darla al posto tuo. Cancellazioni solo se le attivi.
+- **Modalità \`full\`**: anche invio allo SDI ed email, con la stessa conferma.
+- **Mai IBAN**: il server non invia coordinate bancarie a Fatture in Cloud; i documenti usano solo il metodo di pagamento configurato.
 - Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.
 
 Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${repo}`,
@@ -47,7 +48,8 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
         FIC_ACCESS_TOKEN: '${user_config.fic_access_token}',
         FIC_COMPANY_ID: '${user_config.fic_company_id}',
         FIC_MODE: '${user_config.fic_mode}',
-        FIC_EXTRA_TOOLS: '${user_config.fic_extra_tools}',
+        FIC_CONFIRM_METHOD: '${user_config.fic_confirm_method}',
+        FIC_ENABLE_DELETE: '${user_config.fic_enable_delete}',
         FIC_DEFAULT_PAYMENT_ACCOUNT_ID: '${user_config.fic_default_payment_account_id}',
         FIC_EMAIL_ALLOWED_RECIPIENTS: '${user_config.fic_email_allowed_recipients}',
       },
@@ -90,15 +92,24 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
       type: 'string',
       title: 'Modalità',
       description:
-        'readonly (default, solo lettura), write (crea e modifica, cancella con conferma), full (anche invio SDI ed email, con conferma). Qualsiasi altro valore vale readonly.',
+        'readonly (default, solo lettura), write (crea e modifica, ogni scrittura con la tua conferma), full (anche invio SDI ed email, con la tua conferma). Qualsiasi altro valore vale readonly.',
       default: 'readonly',
       required: false,
     },
-    fic_extra_tools: {
+    fic_confirm_method: {
       type: 'string',
-      title: 'Tool di scrittura abilitati singolarmente (facoltativo)',
+      title: 'Conferma delle scritture',
       description:
-        'Nomi separati da virgola, attivi anche in modalità readonly. Esempio: fic_create_entity per creare nuovi clienti. Gli invii (SDI, email) non si abilitano così. Il token deve avere il permesso di scrittura sulla risorsa.',
+        'auto (default): richiesta di conferma in Claude Desktop se supportata, altrimenti finestra di macOS; elicitation: solo in Claude Desktop; dialog: solo finestra di macOS. Senza un canale disponibile le scritture vengono rifiutate.',
+      default: 'auto',
+      required: false,
+    },
+    fic_enable_delete: {
+      type: 'boolean',
+      title: 'Consenti le cancellazioni',
+      description:
+        'Attiva fic_delete (solo in modalità write o full), sempre con anteprima e la tua conferma. Spento di default.',
+      default: false,
       required: false,
     },
     fic_default_payment_account_id: {
@@ -163,6 +174,20 @@ const server = {
           isRequired: false,
           format: 'string',
           default: 'readonly',
+        },
+        {
+          name: 'FIC_CONFIRM_METHOD',
+          description: 'conferma umana delle scritture: auto (default), elicitation o dialog (macOS)',
+          isRequired: false,
+          format: 'string',
+          default: 'auto',
+        },
+        {
+          name: 'FIC_ENABLE_DELETE',
+          description: 'true per attivare fic_delete (default false)',
+          isRequired: false,
+          format: 'boolean',
+          default: 'false',
         },
       ],
     },

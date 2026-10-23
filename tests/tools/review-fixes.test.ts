@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLIENT_ROSSI, invoice, page } from '../fixtures/issued.js';
-import { call, connect, testApp } from '../helpers/app.js';
+import { call, connect, previewAndRun, testApp } from '../helpers/app.js';
 import { FakeFic } from '../helpers/fake-fetch.js';
 
 /** Scenari emersi dalle revisioni di correttezza e di sicurezza. */
@@ -90,14 +90,17 @@ describe('conversione con eliminazione dell’originale', () => {
     const { app } = testApp({ fic, mode: 'write' });
     const client = await connect(app);
     const preview = await call(client, 'fic_convert_issued_document', { document_id: 50, keep_copy: false });
-    expect(preview.data.preview).toBe(true);
+    expect(preview.data.dry_run).toBe(true);
     expect(fic.calls.some((c) => c.method === 'POST')).toBe(false);
+    expect(preview.data.warning).toContain('eliminato');
+    expect(preview.data.confirmation_text).toContain('VIENE ELIMINATO');
     const done = await call(client, 'fic_convert_issued_document', {
       document_id: 50,
       keep_copy: false,
+      dry_run: false,
       confirm: preview.data.confirm_token,
     });
-    expect(done.data.converted).toBe(true);
+    expect(done.data.converted, done.text).toBe(true);
   });
 });
 
@@ -131,7 +134,7 @@ describe('difese contro la manipolazione del modello', () => {
     const fic = emailFic();
     const { app } = testApp({ fic, mode: 'full' });
     const client = await connect(app);
-    await call(client, 'fic_update_entity', { id: 501, email: 'attaccante@example.org' });
+    await previewAndRun(client, 'fic_update_entity', { id: 501, email: 'attaccante@example.org' });
     const res = await call(client, 'fic_send_email', { document_id: 5 });
     expect(res.isError).toBe(true);
     expect(res.text).toContain('durante questa sessione');
@@ -156,25 +159,24 @@ describe('difese contro la manipolazione del modello', () => {
     expect(fic.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
-  it('il cambio di IBAN di un conto passa da anteprima e conferma', async () => {
+  it('fic_api_write non tocca mai conti di saldo e metodi di pagamento, nemmeno con un token', async () => {
     const fic = new FakeFic()
       .withCompany()
       .on('PUT', '/c/1001/settings/payment_accounts/3', { body: { data: { id: 3 } } });
-    const { app } = testApp({ fic, mode: 'write' });
-    const client = await connect(app);
-    const args = {
+    const { app, dialogs } = testApp({ fic, mode: 'write' });
+    const res = await call(await connect(app), 'fic_api_write', {
       operation_id: 'modifyPaymentAccount',
       path_params: { payment_account_id: 3 },
-      body: { data: { iban: 'IT00X0000000000000000000000' } },
-    };
-    const preview = await call(client, 'fic_api_write', args);
-    expect(preview.data.preview).toBe(true);
+      body: { data: { iban: 'IT60X0542811101000000123456' } },
+      confirm: 'CFG-3-abc-123456789012',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain('app web');
     expect(fic.calls.some((c) => c.method === 'PUT')).toBe(false);
-    const done = await call(client, 'fic_api_write', { ...args, confirm: preview.data.confirm_token });
-    expect(done.data.executed).toBe(true);
+    expect(dialogs).toHaveLength(0);
   });
 
-  it('anche un IBAN inserito in una scrittura generica di un cliente chiede conferma', async () => {
+  it('un IBAN in una scrittura generica di un cliente viene rifiutato già in anteprima', async () => {
     const fic = new FakeFic()
       .withCompany()
       .on('PUT', '/c/1001/entities/clients/501', { body: { data: { id: 501 } } });
@@ -184,7 +186,9 @@ describe('difese contro la manipolazione del modello', () => {
       path_params: { client_id: 501 },
       body: { data: { bank_iban: 'IT00X0000000000000000000000' } },
     });
-    expect(res.data.preview).toBe(true);
+    expect(res.isError).toBe(true);
+    expect(res.text).toContain('coordinate bancarie');
+    expect(fic.calls.some((c) => c.method === 'PUT')).toBe(false);
   });
 
   it('nelle risposte generiche delimita ogni testo con spazi, anche in campi non previsti', async () => {
@@ -281,7 +285,7 @@ describe('download', () => {
     const fic = new FakeFic()
       .withCompany()
       .on('GET', '/c/1001/issued_documents/5', { body: { data: doc } })
-      .on('GET', '/x.pdf', { text: '%PDF' });
+      .on('GET', '/x.pdf', { text: '%PDF', headers: { 'content-type': 'application/pdf' } });
     const { app } = testApp({ fic, config: { downloadDir: dir } });
     const res = await call(await connect(app), 'fic_download_file', { document_id: 5 });
     expect(res.isError).toBe(true);

@@ -2,17 +2,22 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { refused } from '../api/errors.js';
 
 /**
- * Token di conferma per le azioni irreversibili (invio SDI, email, cancellazioni, webhook).
+ * Token che lega l'anteprima di una scrittura al corpo che verrà davvero inviato.
  *
  * L'anteprima restituisce un token del tipo `SDI-12345-k3x9ab-7f3a9c2e1d`: prefisso dell'azione, ID,
  * istante di emissione in base 36, HMAC. L'HMAC copre azione, ID, istante, stato del documento
  * (per esempio `updated_at`) e parametri, con un segreto casuale generato all'avvio del processo:
  * il modello non può fabbricarlo, e se documento o parametri cambiano il token non vale più.
+ *
+ * Il token NON autorizza nulla da solo: il modello lo riceve e potrebbe usarlo senza chiedere. Ogni
+ * esecuzione richiede anche la conferma umana fuori banda (vedi `human.ts`); il token garantisce solo che
+ * la persona confermi esattamente il corpo mostrato nell'anteprima.
  */
 
 export const CONFIRM_TTL_MS = 10 * 60 * 1000;
 
-export type ConfirmAction = 'SDI' | 'EMAIL' | 'DEL' | 'HOOK' | 'CFG';
+/** SDI e EMAIL invii, DEL cancellazioni, HOOK webhook, DOC documenti, INST rate, ENT anagrafiche, API scritture generiche. */
+export type ConfirmAction = 'SDI' | 'EMAIL' | 'DEL' | 'HOOK' | 'CFG' | 'DOC' | 'INST' | 'ENT' | 'API';
 
 function canonical(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
@@ -46,7 +51,15 @@ export class ConfirmService {
     return `${action}-${id}-${issued}-${this.mac(action, String(id), issued, state, params)}`;
   }
 
-  /** Lancia un errore `refused` con la spiegazione se il token non è valido per questa azione esatta. */
+  /** Firma un testo con il segreto del processo (stato dei giri di conferma, vedi `human.ts`). */
+  sign(text: string): string {
+    return createHmac('sha256', this.secret).update(`state|${text}`).digest('hex').slice(0, 32);
+  }
+
+  /**
+   * Lancia un errore `refused` con la spiegazione se il token non è valido per questa azione esatta.
+   * Non consuma il token: lo si consuma con `consume` solo dopo la conferma umana, subito prima di eseguire.
+   */
   verify(token: string, action: ConfirmAction, id: string | number, state: string, params: unknown): void {
     const parts = token.trim().split('-');
     const again =
@@ -74,6 +87,15 @@ export class ConfirmService {
       );
     }
     if (this.used.has(mac)) throw refused(`Questo token di conferma è già stato usato. ${again}`);
+  }
+
+  /** Segna il token come usato: ogni token vale per una sola esecuzione. */
+  consume(token: string): void {
+    const mac = token.trim().split('-').at(-1) ?? '';
+    if (this.used.has(mac))
+      throw refused(
+        'Questo token di conferma è già stato usato. Chiama di nuovo il tool senza `confirm` per una nuova anteprima.',
+      );
     this.used.add(mac);
   }
 }

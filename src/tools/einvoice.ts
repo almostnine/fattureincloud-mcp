@@ -1,5 +1,16 @@
-import { closeSync, constants, mkdirSync, openSync, writeSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
+import { homedir } from 'node:os';
+import { extname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { FicError, refused } from '../api/errors.js';
 import { callOp } from '../api/ops.js';
@@ -104,6 +115,83 @@ export function isAllowedFileHost(url: string): boolean {
   }
 }
 
+/** Estensione del file scaricato: dal tipo di contenuto, poi dal nome nel link, altrimenti quella attesa. */
+const EXT_BY_TYPE: Record<string, string> = {
+  'application/pdf': '.pdf',
+  'application/xml': '.xml',
+  'text/xml': '.xml',
+  'application/pkcs7-mime': '.p7m',
+  'application/x-pkcs7-mime': '.p7m',
+  'application/zip': '.zip',
+  'application/x-zip-compressed': '.zip',
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/gif': '.gif',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+};
+const KNOWN_EXT = new Set([...Object.values(EXT_BY_TYPE), '.jpeg']);
+
+export function fileExtension(contentType: string | null, url: string, fallback: string): string {
+  const type = (contentType ?? '').split(';')[0]!.trim().toLowerCase();
+  if (EXT_BY_TYPE[type]) return EXT_BY_TYPE[type];
+  let fromName = '';
+  try {
+    fromName = extname(new URL(url).pathname).toLowerCase();
+  } catch {
+    // link non valido: si usa l'estensione attesa
+  }
+  if (KNOWN_EXT.has(fromName)) return fromName === '.jpeg' ? '.jpg' : fromName;
+  return fallback;
+}
+
+/** Cartella di scambio solo per l'utente (0700), anche se esisteva già con permessi più larghi. */
+export function prepareDownloadDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform === 'win32' || resolve(dir) === resolve(homedir())) return;
+  try {
+    if ((lstatSync(dir).mode & 0o077) !== 0) chmodSync(dir, 0o700);
+  } catch {
+    // cartella non nostra: i file restano comunque 0600
+  }
+}
+
+// Nomi dei file scritti da fic_download_file: tipo_numero_data_id[_ddt|_allegato].estensione.
+const DOWNLOAD_NAME = /^[a-z_]+_[A-Za-z0-9._-]*_\d+(?:_ddt|_allegato)?\.[a-z0-9]{2,4}$/;
+
+/**
+ * Cancella i file scaricati dal server più vecchi di `days` giorni. Tocca solo i file che il server stesso
+ * ha scritto (riconosciuti dal nome), mai sottocartelle, link o file messi lì dall'utente per i caricamenti.
+ */
+export function cleanupDownloads(dir: string, days: number, now = Date.now()): number {
+  let removed = 0;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  const limit = now - days * 24 * 60 * 60 * 1000;
+  for (const name of names) {
+    if (!DOWNLOAD_NAME.test(name)) continue;
+    const file = join(dir, name);
+    try {
+      const st = lstatSync(file);
+      if (st.isFile() && st.mtimeMs < limit) {
+        unlinkSync(file);
+        removed++;
+      }
+    } catch {
+      // file sparito o non accessibile: si passa oltre
+    }
+  }
+  return removed;
+}
+
 function safeName(s: string): string {
   return (
     s
@@ -132,7 +220,7 @@ Saves the PDF, delivery note, attachment or e-invoice XML of an issued document 
       `${doc.type ?? 'documento'}_${displayNumber(doc) ?? doc.id}_${doc.date ?? ''}_${doc.id}`,
     );
     const dir = resolve(app.config.downloadDir);
-    mkdirSync(dir, { recursive: true });
+    prepareDownloadDir(dir);
     let bytes: Buffer;
     let file: string;
     if (args.kind === 'xml') {
@@ -166,9 +254,11 @@ Saves the PDF, delivery note, attachment or e-invoice XML of an issued document 
       bytes = Buffer.from(await res.arrayBuffer());
       if (bytes.length > MAX_DOWNLOAD_BYTES)
         throw refused('File troppo grande (oltre 50 MB): scaricalo dal link.');
+      // L'allegato può essere di qualsiasi tipo; PDF e DDT sono PDF salvo diversa indicazione del server.
+      const ext = fileExtension(res.headers.get('content-type'), url, '.pdf');
       file = join(
         dir,
-        `${base}${args.kind === 'attachment' ? '_allegato' : args.kind === 'delivery_note' ? '_ddt' : ''}.pdf`,
+        `${base}${args.kind === 'attachment' ? '_allegato' : args.kind === 'delivery_note' ? '_ddt' : ''}${ext}`,
       );
     }
     // O_NOFOLLOW: se al posto del file c'è un link simbolico, non lo si segue.

@@ -2,12 +2,21 @@ import { z } from 'zod';
 import { refused } from '../api/errors.js';
 import { fetchAll } from '../api/paginate.js';
 import { isoDate, todayRome } from '../domain/dates.js';
-import { paymentSummary } from '../domain/documents.js';
+import { displayNumber, entityName, paymentSummary } from '../domain/documents.js';
 import { groupByClient, installmentRows } from '../domain/installments.js';
 import { fromCents, toCents } from '../domain/money.js';
 import { Q } from '../domain/query.js';
 import type { DataResponse, IssuedDocument, PaymentAccount, PaymentItem } from '../domain/types.js';
+import { stripBankKeys } from '../safety/bank.js';
 import { docTypeSchema, periodShape, resolvePeriod } from './common.js';
+import {
+  authorize,
+  confirmSchema,
+  dryRunSchema,
+  humanPrompt,
+  type Pending,
+  previewFields,
+} from './confirm-flow.js';
 import { defineTool } from './define.js';
 import { getIssued } from './issued-documents.js';
 import { listPaymentAccounts } from './reference-data.js';
@@ -148,7 +157,8 @@ export const setInstallmentStatus = defineTool({
   description: `Segna una rata di un documento emesso come pagata (con conto di saldo e data di pagamento) oppure come non pagata. Tocca solo quella rata: importi, scadenze e altre rate restano invariati.
 Il conto di saldo è obbligatorio per "pagata": indicalo con payment_account_id (elenco con fic_reference_data, list "payment_accounts") oppure configura FIC_DEFAULT_PAYMENT_ACCOUNT_ID. Il server non sceglie mai un conto da solo.
 Esempio: "segna pagata la seconda rata della fattura 33/2026, bonifico del 10 ottobre su Banca" -> recupera l'ID con fic_get_issued_document, poi {document_id, installment:2, status:"paid", paid_date:"2026-10-10", payment_account_id}.
-Marks one installment as paid (with payment account and date) or unpaid.`,
+Prima chiamata (dry_run default true): anteprima prima/dopo e token. Per registrare: stessi parametri con dry_run: false e confirm; il server chiede allora la conferma direttamente all'utente.
+Marks one installment as paid (with payment account and date) or unpaid, after preview and human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
@@ -164,9 +174,11 @@ Marks one installment as paid (with payment account and date) or unpaid.`,
       .positive()
       .optional()
       .describe('Conto di saldo; default FIC_DEFAULT_PAYMENT_ACCOUNT_ID.'),
+    dry_run: dryRunSchema,
+    confirm: confirmSchema,
   }),
   operations: ['getIssuedDocument', 'modifyIssuedDocument', 'listPaymentAccounts'],
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const doc = await getIssued(app, args.document_id);
     if (doc.locked) {
       throw refused(
@@ -214,9 +226,46 @@ Marks one installment as paid (with payment account and date) or unpaid.`,
       ...(p.payment_terms?.days !== null && p.payment_terms?.days !== undefined
         ? { payment_terms: { days: p.payment_terms.days, type: p.payment_terms.type ?? 'standard' } }
         : {}),
-      // Dati FatturaPA del pagamento: si conservano.
-      ...(p.ei_raw ? { ei_raw: p.ei_raw } : {}),
+      // Dati FatturaPA del pagamento: si conservano, ma mai le coordinate bancarie (IBAN, ABI, CAB...).
+      ...(p.ei_raw ? { ei_raw: stripBankKeys(p.ei_raw) } : {}),
     }));
+    const pending: Pending = {
+      action: 'INST',
+      id: args.document_id,
+      state: String(doc.updated_at ?? ''),
+      params: { payments_list },
+      prompt: humanPrompt(args.status === 'paid' ? 'Rata pagata' : 'Rata non pagata', {
+        documento: `${doc.type ?? 'documento'} n. ${displayNumber(doc) ?? '?'} del ${doc.date ?? '?'}`,
+        cliente: entityName(doc.entity),
+        rata: `${idx + 1} di ${list.length}, scadenza ${before.due_date ?? '?'}, importo ${before.amount ?? '?'}`,
+        prima: before.status === 'paid' ? `pagata il ${before.paid_date ?? '?'}` : 'non pagata',
+        dopo:
+          args.status === 'paid'
+            ? `pagata il ${updated.paid_date} sul conto ${account!.name ?? ''} (ID ${account!.id})`
+            : 'non pagata (conto e data di pagamento tolti)',
+      }),
+    };
+    const beforeView = {
+      status: before.status ?? 'not_paid',
+      paid_date: before.paid_date ?? undefined,
+      payment_account_id: before.payment_account?.id ?? undefined,
+    };
+    if (args.dry_run || !args.confirm) {
+      return {
+        dry_run: true,
+        updated: false,
+        document_id: args.document_id,
+        installment: idx + 1,
+        before: beforeView,
+        after: {
+          status: updated.status,
+          paid_date: updated.paid_date ?? undefined,
+          payment_account: account ? { id: account.id, name: account.name } : undefined,
+        },
+        ...previewFields(app, call, pending, 'dry_run: false e confirm uguale a confirm_token'),
+      };
+    }
+    await authorize(app, call, args.confirm, pending);
     const client = await app.api();
     const res = await client.request<DataResponse<IssuedDocument>>({
       operationId: 'modifyIssuedDocument',
@@ -233,13 +282,10 @@ Marks one installment as paid (with payment account and date) or unpaid.`,
     });
     const after = res?.data?.payments_list?.[idx];
     return {
+      updated: true,
       document_id: args.document_id,
       installment: idx + 1,
-      before: {
-        status: before.status ?? 'not_paid',
-        paid_date: before.paid_date ?? undefined,
-        payment_account_id: before.payment_account?.id ?? undefined,
-      },
+      before: beforeView,
       after: {
         status: after?.status ?? updated.status,
         paid_date: after?.paid_date ?? updated.paid_date ?? undefined,

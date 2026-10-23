@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { OPERATIONS } from '../../src/api/catalog.generated.js';
 import type { CatalogOperation } from '../../src/api/catalog-types.js';
 import { DELETE_TARGETS } from '../../src/tools/delete.js';
+import { isBlockedForApiWrite } from '../../src/tools/generic.js';
 import { call, connect, testApp } from '../helpers/app.js';
 import { FakeFic } from '../helpers/fake-fetch.js';
 
@@ -65,7 +66,43 @@ describe('ogni operazione di scrittura passa da fic_api_write', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fic-sweep-'));
   writeFileSync(join(dir, 'allegato.pdf'), '%PDF finto');
 
-  it.each(byEffect('write').map((o) => [o.id, o] as const))('%s', async (_id, op) => {
+  const allowed = byEffect('write').filter((o) => !isBlockedForApiWrite(o.id));
+  const blocked = byEffect('write').filter((o) => isBlockedForApiWrite(o.id));
+
+  it('rifiuta documenti emessi, recupero dal cestino, conti e metodi di pagamento', () => {
+    expect(blocked.map((o) => o.id).sort()).toEqual(
+      [
+        'RecoverBinIssuedDocument',
+        'RecoverBinReceivedDocument',
+        'createIssuedDocument',
+        'createPaymentAccount',
+        'createPaymentMethod',
+        'modifyIssuedDocument',
+        'modifyPaymentAccount',
+        'modifyPaymentMethod',
+      ].sort(),
+    );
+  });
+
+  it.each(blocked.map((o) => [o.id, o] as const))(
+    '%s viene rifiutata senza chiamare FIC',
+    async (_id, op) => {
+      const fic = makeFic();
+      const { app, dialogs } = testApp({ fic, mode: 'write' });
+      const res = await call(await connect(app), 'fic_api_write', {
+        operation_id: op.id,
+        path_params: pathParams(op),
+        body: { data: {} },
+        confirm: 'API-x-y-z',
+      });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('non si esegue con fic_api_write');
+      expect(fic.calls.some((c) => c.method !== 'GET')).toBe(false);
+      expect(dialogs).toHaveLength(0);
+    },
+  );
+
+  it.each(allowed.map((o) => [o.id, o] as const))('%s', async (_id, op) => {
     const fic = makeFic();
     const { app } = testApp({ fic, mode: 'write', config: { downloadDir: dir } });
     const multipart = op.body?.contentType.startsWith('multipart/');
@@ -76,12 +113,11 @@ describe('ogni operazione di scrittura passa da fic_api_write', () => {
       query: requiredQuery(op),
       ...(multipart ? { file_path: 'allegato.pdf' } : op.body ? { body: { data: {} } } : {}),
     };
-    let res = await call(client, 'fic_api_write', args);
-    if (res.data.preview) {
-      // Dati di pagamento: anteprima, poi conferma.
-      expect(fic.calls.some((c) => c.method === op.method && expectedPath(op).test(c.path))).toBe(false);
-      res = await call(client, 'fic_api_write', { ...args, confirm: res.data.confirm_token });
-    }
+    // Sempre anteprima, poi token e conferma umana.
+    const preview = await call(client, 'fic_api_write', args);
+    expect(preview.data.preview, preview.text).toBe(true);
+    expect(fic.calls.some((c) => c.method === op.method && expectedPath(op).test(c.path))).toBe(false);
+    const res = await call(client, 'fic_api_write', { ...args, confirm: preview.data.confirm_token });
     expect(res.isError, res.text).toBe(false);
     const sent = fic.calls.at(-1)!;
     expect(sent.method).toBe(op.method);
@@ -110,7 +146,7 @@ describe('ogni operazione di scrittura passa da fic_api_write', () => {
 describe('ogni cancellazione passa da fic_delete', () => {
   it.each(Object.entries(DELETE_TARGETS))('%s', async (resource, target) => {
     const fic = makeFic();
-    const { app } = testApp({ fic, mode: 'write' });
+    const { app } = testApp({ fic, mode: 'write', config: { enableDelete: true } });
     const client = await connect(app);
     const id = resource === 'webhook_subscription' ? 'SUB7' : 42;
     const preview = await call(client, 'fic_delete', { resource, id });

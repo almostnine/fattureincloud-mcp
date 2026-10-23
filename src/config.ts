@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { ConfirmMethod } from './safety/human.js';
 
 export type Mode = 'readonly' | 'write' | 'full';
 export type CacheMode = 'memory' | 'disk' | 'off';
@@ -11,9 +12,18 @@ export interface Config {
   mode: Mode;
   defaultPaymentAccountId: number | undefined;
   emailAllowedRecipients: string[];
-  /** Tool di scrittura abilitati singolarmente, in aggiunta a quelli della modalità (FIC_EXTRA_TOOLS). */
+  /**
+   * FIC_EXTRA_TOOLS, dalla 1.2.0 senza effetto: in readonly non abilita più nessuna scrittura e nelle altre
+   * modalità i tool sono già tutti attivi. Resta letto solo per avvisare nei log.
+   */
   extraTools: string[];
+  /** Come chiedere la conferma umana delle scritture (FIC_CONFIRM_METHOD). */
+  confirmMethod: ConfirmMethod;
+  /** fic_delete esiste solo con FIC_ENABLE_DELETE=true, oltre alla modalità write o full. */
+  enableDelete: boolean;
   downloadDir: string;
+  /** Giorni dopo i quali i file scaricati dal server vengono cancellati all'avvio; undefined: mai. */
+  downloadRetentionDays: number | undefined;
   cache: CacheMode;
   cacheTtlSeconds: number;
   maxPages: number;
@@ -25,6 +35,7 @@ export interface Config {
 const MODES: readonly Mode[] = ['readonly', 'write', 'full'];
 const CACHE_MODES: readonly CacheMode[] = ['memory', 'disk', 'off'];
 const LOG_LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'debug'];
+const CONFIRM_METHODS: readonly ConfirmMethod[] = ['auto', 'elicitation', 'dialog'];
 
 function clean(value: string | undefined): string | undefined {
   const v = value?.trim();
@@ -80,7 +91,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    confirmMethod: oneOf('FIC_CONFIRM_METHOD', env.FIC_CONFIRM_METHOD, CONFIRM_METHODS, 'auto', warnings),
+    // Solo "true" (o "1") abilita le cancellazioni: qualsiasi altro valore le lascia spente.
+    enableDelete: ['true', '1'].includes(clean(env.FIC_ENABLE_DELETE)?.toLowerCase() ?? ''),
     downloadDir: clean(env.FIC_DOWNLOAD_DIR) ?? join(homedir(), 'Downloads', 'fattureincloud-mcp'),
+    downloadRetentionDays: positiveInt(
+      'FIC_DOWNLOAD_RETENTION_DAYS',
+      env.FIC_DOWNLOAD_RETENTION_DAYS,
+      warnings,
+    ),
     cache: oneOf('FIC_CACHE', env.FIC_CACHE, CACHE_MODES, 'memory', warnings),
     cacheTtlSeconds: positiveInt('FIC_CACHE_TTL_SECONDS', env.FIC_CACHE_TTL_SECONDS, warnings) ?? 86_400,
     maxPages: positiveInt('FIC_MAX_PAGES', env.FIC_MAX_PAGES, warnings) ?? 20,

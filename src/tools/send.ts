@@ -5,6 +5,7 @@ import type { AppContext } from '../context.js';
 import { displayNumber, EI_STATUS_IT, entityName } from '../domain/documents.js';
 import type { DataResponse, Entity, IssuedDocument } from '../domain/types.js';
 import { cleanOutgoingText, untrusted } from '../safety/untrusted.js';
+import { authorize, confirmSchema, humanPrompt, type Pending, previewFields } from './confirm-flow.js';
 import { defineTool } from './define.js';
 import { getEntity } from './entities.js';
 import { getIssued } from './issued-documents.js';
@@ -12,27 +13,24 @@ import { getIssued } from './issued-documents.js';
 /** Stati SDI dai quali un invio (o un nuovo invio dopo la correzione) ha senso. */
 const SENDABLE = new Set(['', 'not_sent', 'missing', 'error', 'discarded']);
 
-const CONFIRM_DESC =
-  'Token restituito dall’anteprima. Usalo solo dopo che l’utente ha visto l’anteprima e ha detto sì in modo esplicito.';
-
 export const sendEInvoice = defineTool({
   name: 'fic_send_einvoice',
   title: 'Invia fattura elettronica allo SDI',
   description: `Invia allo SDI una fattura elettronica già creata. È un'azione IRREVERSIBILE verso l'Agenzia delle Entrate e il cliente.
 Funziona in due passi:
-1. senza confirm: non invia nulla, restituisce l'anteprima (numero, cliente, codice destinatario o PEC, importi, verifica dell'XML, prova di invio) e un token di conferma;
-2. mostra l'anteprima all'utente e, solo dopo il suo sì esplicito, richiama con confirm uguale al token.
-Il token scade dopo 10 minuti e non vale più se il documento cambia.
-Sends an e-invoice to SDI. Irreversible: call without confirm for a preview and token, then with confirm after explicit user approval.`,
+1. senza confirm: non invia nulla, restituisce l'anteprima (numero, cliente, codice destinatario o PEC, importi, verifica dell'XML) e un token;
+2. mostra l'anteprima all'utente; per inviare richiama con confirm uguale al token. Il server chiede allora la conferma direttamente all'utente (finestra di Claude Desktop o del Mac): senza la sua conferma non parte nulla.
+Il token scade dopo 10 minuti e non vale più se il documento cambia. L'anteprima usa solo la verifica dell'XML: non chiama mai l'endpoint di invio.
+Sends an e-invoice to SDI. Irreversible: preview first; execution requires the token and an out-of-band human confirmation.`,
   minMode: 'full',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
     document_id: z.number().int().positive(),
-    confirm: z.string().max(80).optional().describe(CONFIRM_DESC),
+    confirm: confirmSchema,
   }),
   operations: ['getIssuedDocument', 'verifyEInvoiceXml', 'sendEInvoice'],
   docTypeOf: () => 'invoice',
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const doc = await getIssued(app, args.document_id);
     if (!doc.e_invoice) throw refused('Il documento non è una fattura elettronica: non si invia allo SDI.');
     const status = doc.ei_status ?? '';
@@ -43,8 +41,23 @@ Sends an e-invoice to SDI. Irreversible: call without confirm for a preview and 
     }
     const state = String(doc.updated_at ?? '');
     const client = await app.api();
+    const pending: Pending = {
+      action: 'SDI',
+      id: args.document_id,
+      state,
+      params: {},
+      prompt: humanPrompt('Invio allo SDI', {
+        documento: `fattura elettronica n. ${displayNumber(doc) ?? '?'} del ${doc.date ?? '?'}`,
+        cliente: entityName(doc.entity),
+        codice_destinatario: doc.entity?.ei_code ?? undefined,
+        pec: doc.entity?.certified_email ?? undefined,
+        totale: doc.amount_gross,
+        attenzione: 'invio IRREVERSIBILE all’Agenzia delle Entrate e al cliente',
+      }),
+    };
 
     if (!args.confirm) {
+      // Solo la verifica dell'XML: l'endpoint di invio non si chiama mai in anteprima, nemmeno con dry_run.
       let xml: Record<string, unknown>;
       try {
         await callOp(client, 'verifyEInvoiceXml', { pathParams: { document_id: args.document_id } });
@@ -53,21 +66,6 @@ Sends an e-invoice to SDI. Irreversible: call without confirm for a preview and 
         if (err instanceof FicError && err.kind === 'validation')
           xml = { valid: false, errors: err.details.validation ?? [err.details.apiMessage] };
         else throw err;
-      }
-      let dryRun: Record<string, unknown>;
-      try {
-        const r = await callOp<DataResponse<{ name?: string }>>(client, 'sendEInvoice', {
-          pathParams: { document_id: args.document_id },
-          body: { data: {}, options: { dry_run: true } },
-        });
-        dryRun = { ok: true, message: r?.data?.name };
-      } catch (err) {
-        if (!(err instanceof FicError)) throw err;
-        dryRun = {
-          ok: false,
-          message: err.details.apiMessage ?? err.message,
-          note: 'La prova di invio funziona solo con un piano a pagamento e la fatturazione elettronica attiva.',
-        };
       }
       return {
         preview: true,
@@ -83,15 +81,13 @@ Sends an e-invoice to SDI. Irreversible: call without confirm for a preview and 
           current_status: status || 'not_sent',
         },
         xml_verification: xml,
-        dry_run: dryRun,
-        confirm_token: xml.valid ? app.confirm.issue('SDI', args.document_id, state, {}) : undefined,
-        instructions: xml.valid
-          ? 'Mostra questa anteprima all’utente. Solo se risponde sì in modo esplicito, richiama fic_send_einvoice con confirm uguale a confirm_token.'
-          : 'L’XML non è valido: correggi il documento prima dell’invio.',
+        ...(xml.valid
+          ? previewFields(app, call, pending)
+          : { instructions: 'L’XML non è valido: correggi il documento prima dell’invio.' }),
       };
     }
 
-    app.confirm.verify(args.confirm, 'SDI', args.document_id, state, {});
+    await authorize(app, call, args.confirm, pending);
     const r = await callOp<DataResponse<{ name?: string; date?: string }>>(client, 'sendEInvoice', {
       pathParams: { document_id: args.document_id },
       body: { data: {} },
@@ -167,9 +163,10 @@ export const sendEmail = defineTool({
   description: `Invia un documento emesso per email tramite Fatture in Cloud (per esempio la copia di cortesia della fattura o un sollecito con il documento allegato). È un'azione IRREVERSIBILE verso terzi.
 Destinatari ammessi: solo gli indirizzi del cliente in anagrafica o nel documento, quello proposto da Fatture in Cloud e quelli configurati in FIC_EMAIL_ALLOWED_RECIPIENTS. Qualsiasi altro indirizzo viene rifiutato.
 Funziona in due passi:
-1. senza confirm: non invia nulla, restituisce l'anteprima (mittente, destinatari, oggetto, testo, allegato) e un token di conferma;
-2. mostra l'anteprima all'utente e, solo dopo il suo sì esplicito, richiama con gli STESSI parametri e confirm uguale al token.
-Sends a document by email. Irreversible: preview first, then confirm with the token after explicit user approval.`,
+1. senza confirm: non invia nulla, restituisce l'anteprima (mittente, destinatari, oggetto, testo, allegato) e un token;
+2. mostra l'anteprima all'utente; per inviare richiama con gli STESSI parametri e confirm uguale al token. Il server chiede allora la conferma direttamente all'utente: senza la sua conferma non parte nulla.
+Il testo non può contenere IBAN o altre coordinate bancarie.
+Sends a document by email. Irreversible: preview first; execution requires the token and an out-of-band human confirmation.`,
   minMode: 'full',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
@@ -195,10 +192,10 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
     attach_pdf: z.boolean().default(true),
     include_document_link: z.boolean().default(true).describe('Pulsante per visualizzare il documento.'),
     send_copy: z.boolean().default(false).describe('Invia una copia all’indirizzo dell’azienda.'),
-    confirm: z.string().max(80).optional().describe(CONFIRM_DESC),
+    confirm: confirmSchema,
   }),
   operations: ['getIssuedDocument', 'getEmailData', 'getClient', 'scheduleEmail'],
-  handler: async (args, app) => {
+  handler: async (args, app, call) => {
     const doc = await getIssued(app, args.document_id);
     const client = await app.api();
     const res = await callOp<DataResponse<EmailData>>(client, 'getEmailData', {
@@ -266,6 +263,22 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
       send_copy: args.send_copy,
     };
     const state = String(doc.updated_at ?? '');
+    const plainBody = body.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+    const pending: Pending = {
+      action: 'EMAIL',
+      id: args.document_id,
+      state,
+      params: payload,
+      prompt: humanPrompt('Invio email', {
+        documento: `${doc.type ?? 'documento'} n. ${displayNumber(doc) ?? '?'}`,
+        da: sender.email,
+        a: recipients.join(', '),
+        copia_a: args.send_copy ? (data.cc_email ?? 'indirizzo dell’azienda') : undefined,
+        oggetto: subject,
+        pdf_allegato: args.attach_pdf ? 'sì' : 'no',
+        testo: plainBody,
+      }),
+    };
 
     if (!args.confirm) {
       return {
@@ -282,15 +295,13 @@ Sends a document by email. Irreversible: preview first, then confirm with the to
         cc: args.send_copy ? (data.cc_email ?? undefined) : undefined,
         subject: untrusted(subject, 300),
         // L'anteprima mostra il testo per intero: l'utente approva esattamente quello che parte.
-        body: untrusted(body.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''), 60_000),
+        body: untrusted(plainBody, 60_000),
         attach_pdf: args.attach_pdf,
-        confirm_token: app.confirm.issue('EMAIL', args.document_id, state, payload),
-        instructions:
-          'Mostra questa anteprima all’utente. Solo se risponde sì in modo esplicito, richiama fic_send_email con gli stessi parametri e confirm uguale a confirm_token.',
+        ...previewFields(app, call, pending),
       };
     }
 
-    app.confirm.verify(args.confirm, 'EMAIL', args.document_id, state, payload);
+    await authorize(app, call, args.confirm, pending);
     await callOp(client, 'scheduleEmail', {
       pathParams: { document_id: args.document_id },
       body: { data: payload },

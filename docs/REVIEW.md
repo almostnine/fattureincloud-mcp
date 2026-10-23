@@ -59,7 +59,7 @@ Nessun problema critico o alto. Modalità, host unico, upload, cache e gestione 
 | L9 | Credenziali persistite nel checkout della CI | `persist-credentials: false` |
 | L3 | Anteprima SDI basata su `dry_run` mai provato su un account reale | aperto, vedi sezione 3 |
 
-Rischio residuo noto: il modello può chiamare l'anteprima e poi confermare da solo. Il token garantisce che l'azione eseguita sia quella mostrata; l'approvazione umana è affidata a Claude Desktop, che per i tool con `destructiveHint: true` chiede il permesso a ogni chiamata. Il README sconsiglia "consenti sempre" per invii e cancellazioni.
+Rischio residuo noto nella 1.0.0 e nella 1.1.0: il modello poteva chiamare l'anteprima e poi confermare da solo. Chiuso nella 1.2.0 con la conferma umana fuori banda (sezione 4).
 
 ## 3. Da verificare sugli account reali
 
@@ -70,5 +70,29 @@ Rischio residuo noto: il modello può chiamare l'anteprima e poi confermare da s
 | Host e redirect dei link ai PDF (oggi ammessi solo `*.fattureincloud.it`, senza redirect) | account reale, sola lettura | verificato: host `compute.fattureincloud.it`, risposta diretta `application/pdf`, nessun redirect |
 | PUT parziale con la sola `payments_list`: le altre rate e il resto del documento restano invariati | account Trial | in attesa dell'account |
 | Creazione, duplicazione, conversione, cancellazione | account Trial | in attesa dell'account |
-| `sendEInvoice` con `dry_run` | solo piano a pagamento: non verificabile sul Trial; l'invio reale resta protetto da anteprima e conferma | aperto |
+| `sendEInvoice` con `dry_run` | dalla 1.2.0 non serve più: l'anteprima usa solo `verifyEInvoiceXml` | chiuso |
+| Conferma via elicitation in Claude Desktop (casella "Confermo") | Mac di Marco, modalità `write`, una scrittura innocua | da verificare |
+| Finestra di conferma macOS (osascript) avviata dal server dentro Claude Desktop, se il client non dichiara l'elicitation | Mac di Marco, `FIC_CONFIRM_METHOD=dialog` | da verificare |
+| `fic_update_issued_document` con `ei_payment_method`: i dati SDI reinviati senza `bank_*` non creano problemi all'XML (le coordinate arrivano dal metodo di pagamento) | account Trial | da verificare |
 | Installazione del `.mcpb` in Claude Desktop su macOS | Mac di Marco | fatta il 17 ottobre 2026: installazione e uso in sola lettura funzionanti |
+
+## 4. Revisione di sicurezza della 1.2.0
+
+Stato al 23 ottobre 2026. Una revisione sull'uso con l'account reale ha trovato dodici difetti; l'account era già stato bloccato una volta da Fatture in Cloud per "tentativo di inserimento di un IBAN non autorizzato" da una fattura creata via API.
+
+| # | Rilievo | Risoluzione |
+|---|---|---|
+| 1 | Il token di conferma tornava al modello, che poteva fare anteprima e conferma da solo (un test lo dava per atteso) | conferma umana fuori banda a ogni esecuzione: elicitation MCP (era 2025 ed era 2026-07-28), finestra macOS in mancanza, altrimenti rifiuto; il token lega solo l'anteprima al corpo. Il test di autoconferma è sostituito da test che provano il rifiuto senza persona, l'esecuzione unica dopo il sì, il rifiuto, il corpo cambiato |
+| 2 | In `write` quasi tutte le scritture partivano subito (`dry_run` false di default, rate, anagrafiche, `fic_api_write` su documenti, F24, prima nota, cestino); `fic_delete` sempre attivo | `dry_run` vale `true` per documenti, rate e anagrafiche; tutte le scritture passano da anteprima, token e conferma umana; `fic_api_write` rifiuta documenti emessi, recupero dal cestino, conti e metodi di pagamento; `fic_delete` solo con `FIC_ENABLE_DELETE=true` |
+| 3 | IBAN riconosciuto solo dal nome del campo, con conferma aggirabile | controllo nel client HTTP su ogni corpo in uscita: chiavi bancarie (anche FatturaPA) e testi con la forma di un IBAN, con o senza spazi, di qualsiasi paese; sempre rifiutati |
+| 4 | La duplicazione copiava `ei_data.bank_*` e `ei_raw`; la modifica reinviava tutto `ei_data` | coordinate tolte da `ei_data`, `ei_raw` non copiato, del metodo di pagamento solo l'`id`; lo stesso per la conversione |
+| 5 | L'anteprima SDI chiamava il vero `sendEInvoice` con `dry_run` | anteprima solo con `verifyEInvoiceXml`; test che nessuna chiamata all'invio parta in anteprima |
+| 6 | `FIC_EXTRA_TOOLS` poteva abilitare `fic_api_write` e `fic_delete` in `readonly` | elenco chiuso senza `fic_api_write`, `fic_delete` e invii, ignorato in `readonly`: di fatto non abilita più nulla |
+| 7 | Sul 409 "già in esecuzione" il client ripeteva anche le creazioni | retry solo delle richieste ripetibili |
+| 8 | Quote lette dagli header ma non usate, nessun limite lato client | secchiello di 300 richieste ogni 5 minuti per azienda; stop sotto 20 richieste rimaste nell'ora o nel mese; Retry-After invariato |
+| 9 | Valori fino a 300 caratteri con spazi non delimitati se la chiave era "sicura"; XML grezzo non delimitato | formato atteso per ogni chiave sicura, altrimenti delimitato; testi e XML sempre delimitati |
+| 10 | Riconciliazione: sezionali ("33/a") mai riconosciuti; una rata proposta come "medium" per due movimenti | numero con sezionale riconosciuto da "fattura 33", "33/2026", "33/a"; assegnazione globale per punteggio, una rata per un solo movimento |
+| 11 | Importi espliciti delle rate inviati senza arrotondare | arrotondati al centesimo (metà per eccesso, in centesimi interi); rifiuto se la somma arrotondata non torna |
+| 12 | Cartella dei download senza 0700, file mai puliti, allegati sempre `.pdf` | 0700 anche su cartella esistente, estensione dal tipo di contenuto, pulizia facoltativa all'avvio (`FIC_DOWNLOAD_RETENTION_DAYS`) dei soli file scritti dal server |
+
+Rischio residuo: la conferma via elicitation si fida del client MCP, che mostra la richiesta e restituisce la risposta della persona. Se un client rispondesse da solo, la difesa cadrebbe: in quel caso `FIC_CONFIRM_METHOD=dialog` su macOS usa una finestra di sistema che nessun client controlla.

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -8,8 +9,10 @@ import { callOp } from '../api/ops.js';
 import { MAX_PER_PAGE } from '../api/paginate.js';
 import type { Mode } from '../config.js';
 import type { AppContext } from '../context.js';
-import { cleanOutgoingText } from '../safety/untrusted.js';
+import { assertNoBankData } from '../safety/bank.js';
+import { cleanOutgoingText, untrusted } from '../safety/untrusted.js';
 import { wrapFreeText } from '../safety/wrap.js';
+import { authorize, confirmSchema, humanPrompt, type Pending, previewFields } from './confirm-flow.js';
 import { defineTool } from './define.js';
 import { toolRegistry } from './registry.js';
 
@@ -66,7 +69,10 @@ function opSummary(op: CatalogOperation, tools: Array<{ name: string; operations
     summary: op.summary,
     effect: op.effect,
     mode: MODE_FOR[op.effect],
-    tools: [...coveringTools(op.id, tools), SEND_TOOL[op.id] ?? TOOL_FOR_EFFECT[op.effect]].filter(Boolean),
+    tools: [
+      ...coveringTools(op.id, tools),
+      SEND_TOOL[op.id] ?? (blockedReason(op) ? undefined : TOOL_FOR_EFFECT[op.effect]),
+    ].filter(Boolean),
   };
 }
 
@@ -215,12 +221,9 @@ Runs any read-only Fatture in Cloud API operation by operationId.`,
       body: args.body,
       responseType: text ? 'text' : 'json',
     });
+    // Testi e XML (per esempio la fattura elettronica) sono dati scritti anche da terzi: si delimitano.
     if (typeof res === 'string')
-      return {
-        operation_id: op.id,
-        content_type: op.responseType,
-        text: res.length > MAX_OUTPUT_CHARS ? `${res.slice(0, MAX_OUTPUT_CHARS)}… [troncato]` : res,
-      };
+      return { operation_id: op.id, content_type: op.responseType, text: untrusted(res, MAX_OUTPUT_CHARS) };
     return fitSize({ operation_id: op.id, ...(wrapFreeText(res) as Record<string, unknown>) });
   },
 });
@@ -244,22 +247,40 @@ function readUploadFile(app: AppContext, filePath: string): { name: string; byte
   return { name: basename(real), bytes: readFileSync(real) };
 }
 
-const SENSITIVE_OPS = new Set([
-  'createPaymentAccount',
-  'modifyPaymentAccount',
-  'createPaymentMethod',
-  'modifyPaymentMethod',
-]);
-const BANK_KEY = /iban|bank_|swift|bic|beneficiary/i;
+/**
+ * Operazioni che fic_api_write non esegue mai, con il motivo. I documenti emessi passano solo dai tool
+ * dedicati (anteprima, niente IBAN, rate controllate); conti e metodi di pagamento portano coordinate
+ * bancarie e si gestiscono dall'app web; il recupero dal cestino riporta in vita documenti cancellati.
+ */
+const BLOCKED_OPS: Record<string, string> = {
+  createIssuedDocument:
+    'I documenti emessi si creano solo con fic_create_issued_document, fic_duplicate_issued_document o fic_convert_issued_document.',
+  modifyIssuedDocument:
+    'I documenti emessi si modificano solo con fic_update_issued_document o fic_set_installment_status.',
+  RecoverBinIssuedDocument: 'Il recupero dal cestino si fa dall’app web di Fatture in Cloud.',
+  RecoverBinReceivedDocument: 'Il recupero dal cestino si fa dall’app web di Fatture in Cloud.',
+  createPaymentAccount:
+    'Conti di saldo, metodi di pagamento e coordinate bancarie si gestiscono solo dall’app web di Fatture in Cloud.',
+  modifyPaymentAccount:
+    'Conti di saldo, metodi di pagamento e coordinate bancarie si gestiscono solo dall’app web di Fatture in Cloud.',
+  createPaymentMethod:
+    'Conti di saldo, metodi di pagamento e coordinate bancarie si gestiscono solo dall’app web di Fatture in Cloud.',
+  modifyPaymentMethod:
+    'Conti di saldo, metodi di pagamento e coordinate bancarie si gestiscono solo dall’app web di Fatture in Cloud.',
+};
 
-function hasBankKey(value: unknown, depth = 0): boolean {
-  if (depth > 10 || !value || typeof value !== 'object') return false;
-  return Object.entries(value).some(([k, v]) => BANK_KEY.test(k) || hasBankKey(v, depth + 1));
+/** Operazioni di scrittura che fic_api_write rifiuta sempre (anche quelle coperte dai tool dedicati). */
+export function isBlockedForApiWrite(id: string): boolean {
+  const op = OPERATIONS.find((o) => o.id === id);
+  return Boolean(op && blockedReason(op));
 }
 
-/** Scritture che toccano dati di pagamento: richiedono anteprima e conferma. */
-function isSensitive(op: CatalogOperation, body: unknown): boolean {
-  return SENSITIVE_OPS.has(op.id) || hasBankKey(body);
+/** Vero per le operazioni sui documenti emessi che fic_api_write non esegue (creazione, modifica, conversione...). */
+function blockedReason(op: CatalogOperation): string | undefined {
+  if (BLOCKED_OPS[op.id]) return BLOCKED_OPS[op.id];
+  if (/IssuedDocument/i.test(op.id) && !/attachment/i.test(op.id))
+    return 'Le operazioni sui documenti emessi passano solo dai tool dedicati (fic_create_issued_document, fic_update_issued_document, fic_convert_issued_document, fic_duplicate_issued_document).';
+  return undefined;
 }
 
 function cleanBody(value: unknown, depth = 0): unknown {
@@ -275,10 +296,11 @@ function cleanBody(value: unknown, depth = 0): unknown {
 export const apiWrite = defineTool({
   name: 'fic_api_write',
   title: 'Esegui un’operazione di scrittura API',
-  description: `Esegue un'operazione di creazione o modifica dell'API di Fatture in Cloud (${API_REFERENCE}) per operationId: prodotti, corrispettivi, F24, archivio, prima nota, impostazioni (conti, metodi di pagamento, aliquote), recupero dal cestino, caricamento di allegati. Per i caricamenti passa file_path: il file deve stare nella cartella di scambio FIC_DOWNLOAD_DIR.
-Non esegue invii (fic_send_einvoice, fic_send_email) né cancellazioni (fic_delete). Le operazioni sui webhook, che inviano dati a un URL esterno, richiedono la modalità full e una conferma con anteprima. Anche le modifiche a conti di saldo, metodi di pagamento e coordinate bancarie (IBAN) richiedono anteprima e conferma.
+  description: `Esegue un'operazione di creazione o modifica dell'API di Fatture in Cloud (${API_REFERENCE}) per operationId: prodotti, corrispettivi, F24, archivio, prima nota, aliquote IVA, caricamento di allegati. Per i caricamenti passa file_path: il file deve stare nella cartella di scambio FIC_DOWNLOAD_DIR.
+Funziona in due passi: senza confirm restituisce l'anteprima e un token, senza scrivere nulla; per eseguire richiama con gli stessi parametri e confirm, e il server chiede allora la conferma direttamente all'utente.
+Non esegue mai: invii (fic_send_einvoice, fic_send_email), cancellazioni, creazione o modifica di documenti emessi (usa i tool dedicati), recupero dal cestino, conti di saldo e metodi di pagamento. Rifiuta qualsiasi corpo con coordinate bancarie (IBAN, banca, beneficiario). I webhook, che inviano dati a un URL esterno, richiedono la modalità full.
 Trova operazione e campi con fic_api_catalog. Per documenti, rate e anagrafiche preferisci i tool dedicati.
-Runs a create or update Fatture in Cloud API operation by operationId.`,
+Runs a create or update Fatture in Cloud API operation by operationId, after preview and human confirmation.`,
   minMode: 'write',
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   input: z.object({
@@ -291,14 +313,12 @@ Runs a create or update Fatture in Cloud API operation by operationId.`,
       .max(300)
       .optional()
       .describe('Solo per i caricamenti di allegati: file dentro FIC_DOWNLOAD_DIR.'),
-    confirm: z
-      .string()
-      .max(80)
-      .optional()
-      .describe('Per webhook e dati di pagamento: token dell’anteprima, dopo il sì esplicito dell’utente.'),
+    confirm: confirmSchema,
   }),
-  operations: OPERATIONS.filter((o) => o.effect === 'write' || o.effect === 'external').map((o) => o.id),
-  handler: async (args, app) => {
+  operations: OPERATIONS.filter(
+    (o) => (o.effect === 'write' || o.effect === 'external') && !blockedReason(o),
+  ).map((o) => o.id),
+  handler: async (args, app, call) => {
     const op = findOp(args.operation_id);
     if (op.effect === 'read') throw refused(`${op.id} è una lettura: usa fic_api_read.`);
     if (op.effect === 'send')
@@ -310,16 +330,64 @@ Runs a create or update Fatture in Cloud API operation by operationId.`,
         `${op.id} fa arrivare dati dell’azienda a un URL esterno: è ammessa solo in modalità full.`,
       );
     }
+    const blocked = blockedReason(op);
+    if (blocked) throw refused(`${op.id} non si esegue con fic_api_write. ${blocked}`);
     checkParams(op, args.path_params, args.query);
-    const client = await app.api();
     const body = args.body ? cleanBody(args.body) : undefined;
-
-    if (op.body?.contentType.startsWith('multipart/')) {
+    assertNoBankData(body, op.id);
+    const multipart = op.body?.contentType.startsWith('multipart/') ?? false;
+    let file: { name: string; bytes: Buffer } | undefined;
+    if (multipart) {
       if (!args.file_path)
         throw refused(
           `${op.id} carica un file: indica file_path (dentro ${resolve(app.config.downloadDir)}).`,
         );
-      const file = readUploadFile(app, args.file_path);
+      file = readUploadFile(app, args.file_path);
+    }
+    const path = op.path.replace('/c/{company_id}', '');
+    const external = op.effect === 'external';
+    const destination = (body as { data?: { sink?: string; types?: unknown } } | undefined)?.data;
+    const pending: Pending = {
+      action: external ? 'HOOK' : 'API',
+      id: [op.id, ...Object.values(args.path_params).map(String)].join('_'),
+      state: '',
+      params: {
+        op: op.id,
+        path: args.path_params,
+        query: args.query,
+        body: body ?? null,
+        file: file
+          ? { name: file.name, sha256: createHash('sha256').update(file.bytes).digest('hex') }
+          : null,
+      },
+      prompt: humanPrompt(`Scrittura in Fatture in Cloud: ${op.id}`, {
+        operazione: `${op.method} ${path}: ${op.summary}`,
+        parametri: Object.keys(args.path_params).length ? args.path_params : undefined,
+        query: Object.keys(args.query).length ? args.query : undefined,
+        file: file ? `${file.name} (${file.bytes.length} byte)` : undefined,
+        url_esterno: external ? destination?.sink : undefined,
+        attenzione: external
+          ? 'Fatture in Cloud invierà notifiche sugli eventi dell’azienda a questo URL esterno.'
+          : undefined,
+        corpo: body,
+      }),
+    };
+    if (!args.confirm) {
+      return {
+        preview: true,
+        executed: false,
+        operation_id: op.id,
+        destination_url: external ? destination?.sink : undefined,
+        event_types: external ? destination?.types : undefined,
+        file: file ? { name: file.name, bytes: file.bytes.length } : undefined,
+        body: body ? wrapFreeText(body) : undefined,
+        ...previewFields(app, call, pending),
+      };
+    }
+    await authorize(app, call, args.confirm, pending);
+    const client = await app.api();
+
+    if (file) {
       const form = new FormData();
       form.set('filename', file.name);
       form.set('attachment', new Blob([new Uint8Array(file.bytes)]), file.name);
@@ -335,46 +403,6 @@ Runs a create or update Fatture in Cloud API operation by operationId.`,
         ...(res ?? {}),
         next_step: 'Usa attachment_token nel campo omonimo del documento da creare o modificare.',
       };
-    }
-
-    if (op.effect === 'external') {
-      const id = String(args.path_params.subscription_id ?? 'new');
-      const params = { op: op.id, path: args.path_params, query: args.query, body: body ?? null };
-      if (!args.confirm) {
-        const data = (body as { data?: { sink?: string; types?: unknown } } | undefined)?.data;
-        return {
-          preview: true,
-          executed: false,
-          operation_id: op.id,
-          destination_url: data?.sink,
-          event_types: data?.types,
-          warning: 'Fatture in Cloud invierà notifiche sugli eventi dell’azienda a questo URL esterno.',
-          confirm_token: app.confirm.issue('HOOK', id, '', params),
-          instructions:
-            'Mostra l’anteprima all’utente; solo dopo il suo sì esplicito richiama con gli stessi parametri e confirm.',
-        };
-      }
-      app.confirm.verify(args.confirm, 'HOOK', id, '', params);
-    }
-
-    if (isSensitive(op, body)) {
-      // Conti, metodi di pagamento e coordinate bancarie: il cambio di IBAN è una frode classica.
-      const id = Object.values(args.path_params).map(String).join('_') || 'new';
-      const params = { op: op.id, path: args.path_params, query: args.query, body: body ?? null };
-      if (!args.confirm) {
-        return {
-          preview: true,
-          executed: false,
-          operation_id: op.id,
-          changes: wrapFreeText(body ?? {}),
-          warning:
-            'Questa operazione modifica dati di pagamento (conti, metodi di pagamento o coordinate bancarie): verifica ogni valore con l’utente, soprattutto IBAN e beneficiario.',
-          confirm_token: app.confirm.issue('CFG', id, '', params),
-          instructions:
-            'Mostra l’anteprima all’utente; solo dopo il suo sì esplicito richiama con gli stessi parametri e confirm.',
-        };
-      }
-      app.confirm.verify(args.confirm, 'CFG', id, '', params);
     }
 
     const res = await callOp<unknown>(client, op.id, {

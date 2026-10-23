@@ -56,28 +56,34 @@ export function nameTokens(name: string | undefined): string[] {
     .filter((t) => t.length >= 4 && !STOP.has(t));
 }
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+const KEYWORD_BEFORE = /(?:^|\s)(?:fatt|fattura|ft|nr|num)(?:\s+(?:n|nr|num))?\s*$/;
+// Un numero, con l'eventuale coda dopo la barra ("33/2026", "33/a") o lettere attaccate ("33a").
+const NUMBER_REF = /(?<![0-9a-z])(\d+)(?:\s*\/\s*([a-z0-9]+)|([a-z]{1,3}))?(?![0-9])/g;
 
 /**
  * Il numero del documento compare nella causale: "fatt 33", "fattura n 33", "ft 33", "33/2026", "33/26".
- * Un "n" isolato non basta ("rata n 2" non è la fattura 2).
+ * Con un sezionale (numero "33/a" o "33/A") valgono anche "33/a" e "33a"; "fattura 33" e "33/2026"
+ * puntano anche al documento con sezionale. Un "n" isolato non basta ("rata n 2" non è la fattura 2),
+ * e un altro anno o un altro sezionale ("33/2025", "33/b") non è lo stesso documento.
  */
 export function numberMentioned(desc: string, num: string | undefined, date: string | undefined): boolean {
   if (!num) return false;
-  const n = escapeRe(normalize(num).replace(/\s/g, ''));
+  const full = normalize(num).replace(/\s/g, '');
+  const base = full.match(/^\d+/)?.[0];
+  if (!base) return false;
+  const suffix = full.slice(base.length).replace(/^\//, '');
   const year = date?.slice(0, 4);
-  const patterns = [
-    new RegExp(`(?:^|\\s)(?:fatt|fattura|ft|nr|num)(?:\\s+(?:n|nr|num))?\\s*${n}(?![0-9])`),
-    ...(year
-      ? [
-          new RegExp(`(?<![0-9])${n}\\s*/\\s*${year}(?![0-9])`),
-          new RegExp(`(?<![0-9])${n}\\s*/\\s*${year.slice(2)}(?![0-9])`),
-        ]
-      : []),
-  ];
-  return patterns.some((p) => p.test(desc));
+  for (const m of desc.matchAll(NUMBER_REF)) {
+    if (m[1] !== base) continue;
+    const tail = m[2] ?? m[3];
+    if (tail === undefined) {
+      if (KEYWORD_BEFORE.test(desc.slice(0, m.index))) return true;
+      continue;
+    }
+    if (year && (tail === year || tail === year.slice(2))) return true;
+    if (suffix && tail === suffix) return true;
+  }
+  return false;
 }
 
 /** Indice delle rate aperte per importo e dei residui per documento: una passata sola, poi ricerche dirette. */
@@ -110,15 +116,15 @@ const rowKey = (r: InstallmentRow) => `${r.document_id}:${r.installment}`;
 const HIGH_MARGIN = 20;
 
 /**
- * Propone gli abbinamenti tra un movimento in entrata e le rate aperte.
+ * Tutti i candidati per un movimento in entrata, in ordine di punteggio.
  * Candidati: una singola rata con lo stesso importo, oppure tutto il residuo di un documento.
- * Le rate in `used` (già abbinate con alta confidenza a un altro movimento) vengono escluse.
+ * Le rate in `used` vengono escluse.
  */
-export function matchTransaction(
+function candidatesFor(
   tx: BankTransaction,
   index: RowIndex,
-  toleranceCents = 0,
-  used: Set<string> = new Set(),
+  toleranceCents: number,
+  used: Set<string>,
 ): Match[] {
   const amount = toCents(tx.amount);
   const desc = normalize(`${tx.description ?? ''} ${tx.ref ?? ''}`);
@@ -204,6 +210,11 @@ export function matchTransaction(
 
   // A parità di punteggio, prima la scadenza più vecchia (la prima rata non pagata dello stesso documento).
   candidates.sort((a, b) => b.score - a.score || (a.due_date ?? '').localeCompare(b.due_date ?? ''));
+  return candidates;
+}
+
+/** Assegna la confidenza a una lista di candidati già ordinata. */
+function rate(candidates: Match[]): Match[] {
   // Solo il primo può essere "high", e solo se stacca di almeno HIGH_MARGIN punti il miglior candidato di un
   // altro documento: più rate uguali dello stesso documento non rendono ambiguo a quale documento va il bonifico.
   const top = candidates[0];
@@ -212,7 +223,50 @@ export function matchTransaction(
     c.confidence =
       i === 0 && c.score >= 80 && c.score - rival >= HIGH_MARGIN ? 'high' : c.score >= 60 ? 'medium' : 'low';
   });
-  return candidates.slice(0, 3);
+  return candidates;
+}
+
+/**
+ * Propone gli abbinamenti tra un movimento in entrata e le rate aperte (al massimo tre).
+ * Le rate in `used` (già proposte per un altro movimento) vengono escluse.
+ */
+export function matchTransaction(
+  tx: BankTransaction,
+  index: RowIndex,
+  toleranceCents = 0,
+  used: Set<string> = new Set(),
+): Match[] {
+  return rate(candidatesFor(tx, index, toleranceCents, used)).slice(0, 3);
+}
+
+/**
+ * Abbinamenti per un estratto conto intero: una rata viene proposta per un solo movimento, qualunque sia
+ * la confidenza. Le coppie movimento-candidato si assegnano dal punteggio più alto, così una rata va al
+ * movimento che le somiglia di più e non al primo della lista. `undefined` per le uscite.
+ */
+export function matchAll(
+  txs: BankTransaction[],
+  index: RowIndex,
+  toleranceCents = 0,
+): Array<Match[] | undefined> {
+  const pairs: Array<{ tx: number; m: Match }> = [];
+  txs.forEach((tx, i) => {
+    if (tx.amount > 0)
+      for (const m of candidatesFor(tx, index, toleranceCents, new Set())) pairs.push({ tx: i, m });
+  });
+  pairs.sort(
+    (a, b) => b.m.score - a.m.score || a.tx - b.tx || (a.m.due_date ?? '').localeCompare(b.m.due_date ?? ''),
+  );
+  const used = new Set<string>();
+  const out: Array<Match[] | undefined> = txs.map((tx) => (tx.amount > 0 ? [] : undefined));
+  for (const { tx, m } of pairs) {
+    const list = out[tx]!;
+    const keys = matchKeys(m);
+    if (list.length >= 3 || keys.some((k) => used.has(k))) continue;
+    list.push(m);
+    for (const k of keys) used.add(k);
+  }
+  return out.map((list) => (list ? rate(list) : undefined));
 }
 
 /** Chiave della rata, per escluderla dagli abbinamenti successivi. */

@@ -4,6 +4,7 @@ import { Cache, cacheNamespace } from './cache/store.js';
 import type { Config } from './config.js';
 import type { Logger } from './log.js';
 import { ConfirmService } from './safety/confirm.js';
+import { type DialogRunner, HumanConfirm } from './safety/human.js';
 
 export interface Company {
   id: number;
@@ -23,6 +24,8 @@ export class AppContext {
   readonly log: Logger;
   readonly cache: Cache;
   readonly confirm: ConfirmService;
+  /** Conferma umana fuori banda delle scritture (elicitation o finestra di dialogo). */
+  readonly human: HumanConfirm;
   readonly now: () => Date;
   /** fetch per i file dei documenti (link temporanei); iniettabile nei test. */
   readonly httpFetch: typeof fetch;
@@ -44,12 +47,23 @@ export class AppContext {
     now?: () => Date;
     confirm?: ConfirmService;
     cacheDir?: string;
+    /** Finestra di dialogo (osascript); `null` la disattiva. Iniettabile nei test. */
+    dialog?: DialogRunner | null;
+    platform?: NodeJS.Platform;
   }) {
     this.config = opts.config;
     this.log = opts.log;
     this.now = opts.now ?? (() => new Date());
     this.httpFetch = opts.fetch ?? fetch;
     this.confirm = opts.confirm ?? new ConfirmService();
+    const confirm = this.confirm;
+    this.human = new HumanConfirm({
+      method: opts.config.confirmMethod,
+      sign: (text) => confirm.sign(text),
+      log: opts.log,
+      ...(opts.dialog !== undefined ? { dialog: opts.dialog } : {}),
+      ...(opts.platform ? { platform: opts.platform } : {}),
+    });
     this.cache = new Cache({
       mode: opts.config.cache,
       namespace: cacheNamespace(opts.config.token, opts.config.companyId),
