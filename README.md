@@ -30,7 +30,7 @@ Serve Node.js 20 o superiore solo per l'uso da riga di comando: Claude Desktop h
 ### Riga di comando (Linux, macOS, Windows)
 
 ```bash
-FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.3.0
+FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.4.0
 ```
 
 Oppure dal codice sorgente:
@@ -51,7 +51,7 @@ Verifica rapida della configurazione: `FIC_ACCESS_TOKEN=... node dist/index.js c
   "mcpServers": {
     "fattureincloud": {
       "command": "npx",
-      "args": ["-y", "fattureincloud-mcp-server@1.3.0"],
+      "args": ["-y", "fattureincloud-mcp-server@1.4.0"],
       "env": {
         "FIC_ACCESS_TOKEN": "il-tuo-token",
         "FIC_MODE": "readonly"
@@ -94,7 +94,21 @@ Dalla versione 1.2.0 nessuna scrittura parte senza il tuo sì, dato fuori dalla 
    - se il client non supporta l'elicitation, su **macOS** si apre una finestra di sistema con il testo e i pulsanti "Annulla" (predefinito) e "Conferma", che si chiude da sola dopo 2 minuti senza fare nulla;
    - altrimenti la scrittura viene rifiutata.
 
-Il token lega la conferma al corpo esatto mostrato nell'anteprima: se qualcosa cambia, serve una nuova anteprima. Con `FIC_CONFIRM_METHOD` scegli il canale (`auto`, `elicitation`, `dialog`).
+Il token lega la conferma al corpo esatto mostrato nell'anteprima: se qualcosa cambia, serve una nuova anteprima. Vale una volta e scade dopo 10 minuti. Con `FIC_CONFIRM_METHOD` scegli il canale (`auto`, `elicitation`, `dialog`, `host`). Il default resta `auto`.
+
+### Conferma nella chat (`FIC_CONFIRM_METHOD=host`)
+
+Solo se lo imposti tu. Serve agli host che non hanno l'elicitation MCP e non possono aprire una finestra di macOS, e in cui il sì lo dai nella chat: per esempio Grok Bot su Linux, che mostra l'anteprima e ha anche un proprio livello di approvazione delle chiamate. In Claude Desktop lascia `auto`.
+
+Con `host` il server non mostra finestre e non usa l'elicitation. Restano i due passi: anteprima, poi esecuzione con `dry_run: false` e il token (corpo esatto, un solo uso, 10 minuti). L'anteprima dice all'assistente di mostrarti il testo e di richiamare il tool solo dopo un tuo sì esplicito nella conversazione. Ogni scrittura eseguita così viene registrata su stderr.
+
+Avvio su stdio:
+
+```bash
+FIC_ACCESS_TOKEN=... FIC_MODE=write FIC_CONFIRM_METHOD=host node dist/index.js
+```
+
+Nella configurazione MCP dell'host le stesse variabili vanno in `env` del server. Senza `FIC_CONFIRM_METHOD`, o con `auto`, non cambia nulla: se non c'è un canale fuori banda la scrittura viene rifiutata.
 
 **Coordinate bancarie**: il server non invia mai IBAN, banca o beneficiario a Fatture in Cloud. I documenti usano solo il metodo di pagamento configurato nell'account (`payment_method_id`); un IBAN in note, righe o altri campi viene rifiutato. Conti di saldo e metodi di pagamento si gestiscono solo dall'app web.
 
@@ -105,7 +119,7 @@ Il token lega la conferma al corpo esatto mostrato nell'anteprima: se qualcosa c
 | `FIC_ACCESS_TOKEN` | obbligatoria | token personale |
 | `FIC_COMPANY_ID` | | necessario solo se il token vede più aziende |
 | `FIC_MODE` | `readonly` | `readonly`, `write`, `full`; un valore non valido vale `readonly` |
-| `FIC_CONFIRM_METHOD` | `auto` | conferma umana delle scritture: `auto` (elicitation se il client la supporta, altrimenti finestra di dialogo su macOS), `elicitation`, `dialog` |
+| `FIC_CONFIRM_METHOD` | `auto` | conferma delle scritture: `auto` (elicitation se il client la supporta, altrimenti finestra di dialogo su macOS), `elicitation`, `dialog`, `host` (nessuna conferma fuori banda: il sì è quello dato in chat; solo se lo imposti) |
 | `FIC_ENABLE_DELETE` | `false` | `true` registra `fic_delete` (solo in `write` o `full`) |
 | `FIC_ENABLE_SEND` | `false` | `true` registra `fic_send_einvoice` e `fic_send_email` (solo in `full`); senza, il server rifiuta ogni invio anche a livello HTTP |
 | `FIC_EXTRA_TOOLS` | | dalla 1.2.0 senza effetto: in `readonly` non abilita più nessuna scrittura (resta solo un avviso nei log) |
@@ -164,7 +178,7 @@ L'elenco completo delle operazioni API e del tool che le espone è in [docs/COVE
 ## Sicurezza
 
 - **Sola lettura di default**: in `readonly` i tool di scrittura e di invio non vengono registrati.
-- **Ogni scrittura e ogni azione irreversibile** (documenti, rate, anagrafiche, scritture generiche, invio SDI, email, cancellazioni, webhook) parte da un'anteprima e si esegue solo dopo la tua **conferma fuori banda** (elicitation di Claude Desktop o finestra di macOS), che Claude non può dare al posto tuo. Il token dell'anteprima è legato al corpo esatto, vale una volta e scade dopo 10 minuti, ma da solo non basta.
+- **Ogni scrittura e ogni azione irreversibile** (documenti, rate, anagrafiche, scritture generiche, invio SDI, email, cancellazioni, webhook) parte da un'anteprima e, di default, si esegue solo dopo la tua **conferma fuori banda** (elicitation di Claude Desktop o finestra di macOS), che Claude non può dare al posto tuo. Il token dell'anteprima è legato al corpo esatto, vale una volta e scade dopo 10 minuti, ma da solo non basta. Con `FIC_CONFIRM_METHOD=host` la finestra non c'è: il sì è quello dato in chat e il token resta obbligatorio.
 - **Mai IBAN**: nessun corpo con coordinate bancarie esce dal server; i documenti usano solo il metodo di pagamento configurato.
 - **Invii spenti di default**: `fic_send_einvoice` e `fic_send_email` esistono solo in `full` con `FIC_ENABLE_SEND=true`; senza, il client HTTP rifiuta qualsiasi invio allo SDI o per email, da qualunque tool.
 - **Cancellazioni spente di default**: `fic_delete` esiste solo con `FIC_ENABLE_DELETE=true`.
@@ -222,7 +236,7 @@ An [MCP](https://modelcontextprotocol.io) server for [Fatture in Cloud](https://
 ## Installation
 
 - **Claude Desktop**: download the `.mcpb` from [Releases](https://github.com/almostnine/fattureincloud-mcp/releases), double-click it, paste your Fatture in Cloud token (stored in the OS keychain), keep the mode on `readonly`.
-- **Command line** (Node.js 20+): `FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.3.0`, or build from source with `npm ci --ignore-scripts && npm run build && node dist/index.js`.
+- **Command line** (Node.js 20+): `FIC_ACCESS_TOKEN=... npx -y fattureincloud-mcp-server@1.4.0`, or build from source with `npm ci --ignore-scripts && npm run build && node dist/index.js`.
 - **Manual client config**: see the JSON example above (`command`, `args`, `env`).
 
 ## Token
@@ -237,13 +251,21 @@ Create a private app in Fatture in Cloud (**Settings > Developer > New app**, ad
 | `write` | + 8 tools (+ `fic_delete` with `FIC_ENABLE_DELETE=true`) | create and update documents and contacts, mark installments paid |
 | `full` | + 2 tools with `FIC_ENABLE_SEND=true` | SDI e-invoice sending and email (off by default) |
 
-Every write is two-step: the tool first returns a preview (`dry_run` defaults to `true`) and a token; when called again with the token, the server asks **you** directly, through MCP elicitation in Claude Desktop or, if the client lacks it, a native macOS dialog ("Annulla" is the default button). The model cannot answer that prompt. Without a human channel the write is refused. Choose the channel with `FIC_CONFIRM_METHOD` (`auto`, `elicitation`, `dialog`).
+Every write is two-step: the tool first returns a preview (`dry_run` defaults to `true`) and a token; when called again with the token, the server asks **you** directly, through MCP elicitation in Claude Desktop or, if the client lacks it, a native macOS dialog ("Annulla" is the default button). The model cannot answer that prompt. Without a human channel the write is refused. Choose the channel with `FIC_CONFIRM_METHOD` (`auto`, `elicitation`, `dialog`, `host`). The default stays `auto`.
+
+`FIC_CONFIRM_METHOD=host` is opt-in, for a host that confirms in its own chat and has neither MCP elicitation nor a macOS dialog (Grok Bot on Linux, which also reviews MCP calls). The out-of-band step is skipped. The preview and the token stay: the write runs only with `dry_run: false` and a valid preview token (exact body, single use, 10 minutes). The preview tells the assistant to show you the text and to call the tool only after your explicit yes in the conversation. Each write authorized this way is logged to stderr. Stdio launch:
+
+```bash
+FIC_ACCESS_TOKEN=... FIC_MODE=write FIC_CONFIRM_METHOD=host node dist/index.js
+```
+
+Put the same variables in the server `env` of the host's MCP config. Unset, or `auto`, nothing changes.
 
 Configuration variables, the tool list and known limitations are in the Italian section above; the full API coverage table is in [docs/COVERAGE.md](docs/COVERAGE.md).
 
 ## Security
 
-Read-only by default; every write needs an out-of-band human confirmation, and the preview token (bound to the exact payload, single use, 10-minute expiry) is never enough on its own; the server never sends IBANs or other bank details (documents only reference the configured payment method); deletions are off unless `FIC_ENABLE_DELETE=true`; sending to SDI and by email is off unless `FIC_ENABLE_SEND=true`, blocked at the HTTP client too; email only to the client's own addresses; text coming from Fatture in Cloud is delimited and treated as data; no telemetry; one host only; the token never appears in logs. Do not pick "always allow" in Claude Desktop for send and delete tools. See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
+Read-only by default; every write needs an out-of-band human confirmation unless `FIC_CONFIRM_METHOD=host` is set explicitly (then the yes is the one given in chat, and the preview token is still required). The preview token (bound to the exact payload, single use, 10-minute expiry) is never enough on its own in the default modes; the server never sends IBANs or other bank details (documents only reference the configured payment method); deletions are off unless `FIC_ENABLE_DELETE=true`; sending to SDI and by email is off unless `FIC_ENABLE_SEND=true`, blocked at the HTTP client too; email only to the client's own addresses; text coming from Fatture in Cloud is delimited and treated as data; no telemetry; one host only; the token never appears in logs. Do not pick "always allow" in Claude Desktop for send and delete tools. See [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md).
 
 ## License
 

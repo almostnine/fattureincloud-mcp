@@ -239,12 +239,20 @@ Dalla 1.2.0 si applica a ogni scrittura: creazione, modifica, duplicazione e con
 1. Il tool chiamato senza `confirm` (o con `dry_run: true`, il default per documenti, rate e anagrafiche) non scrive nulla: restituisce l'anteprima, il testo esatto che la persona dovrà confermare (`confirmation_text`), il canale di conferma che verrà usato e un token del tipo `DOC-new-invoice-k3x9ab-7f3a9c2e1d`.
 2. Il token è un HMAC, con un segreto casuale generato all'avvio del processo, di azione, ID, stato della risorsa (`updated_at`) e corpo esatto da inviare. Scade dopo 10 minuti e vale una volta. Il modello non può fabbricarlo, ma lo riceve: per questo non basta.
 3. Il tool chiamato con `confirm` (e `dry_run: false`) ricalcola il corpo e verifica il token: se il documento è cambiato, se il corpo è diverso o se il token è scaduto o già usato, rifiuta senza disturbare la persona.
-4. Poi chiede la **conferma umana fuori banda** (`src/safety/human.ts`), con il testo dell'anteprima:
+4. Poi chiede la **conferma umana fuori banda** (`src/safety/human.ts`), con il testo dell'anteprima, salvo `FIC_CONFIRM_METHOD=host` descritto sotto:
    - elicitation MCP se il client l'ha dichiarata: sull'era 2025 una richiesta `elicitation/create` dal server al client; sull'era 2026-07-28 un risultato `input_required` con uno stato firmato (HMAC del token e del testo), che il client soddisfa chiedendo alla persona e poi ripetendo la chiamata. Il modulo ha una sola casella booleana "Confermo": vale solo `accept` con la casella spuntata;
    - altrimenti, su macOS, una finestra `display dialog` via osascript con "Annulla" come pulsante predefinito e di annullamento, chiusura automatica dopo 120 secondi; il testo passa come argomento (`on run argv`), mai dentro lo script;
    - altrimenti rifiuto con spiegazione.
-   `FIC_CONFIRM_METHOD` (`auto`, `elicitation`, `dialog`) forza un canale.
+   `FIC_CONFIRM_METHOD` (`auto`, `elicitation`, `dialog`, `host`) sceglie il canale. `auto` resta il default: elicitation se il client la dichiara, altrimenti la finestra su macOS, altrimenti rifiuto. `host` non ripiega sugli altri canali, anche se ci fossero.
 5. Solo dopo il sì il token viene consumato e la richiesta parte. Rifiuto, annullamento, finestra scaduta: nessuna richiesta di scrittura.
+
+`FIC_CONFIRM_METHOD=host` è opt-in. Salta il passo fuori banda: la scrittura parte quando il tool è richiamato con `dry_run: false` (dove il tool lo ha) e un token di anteprima valido. Il token resta legato al corpo esatto, monouso, con scadenza di 10 minuti; un corpo diverso, un token scaduto, già usato o non valido viene rifiutato prima di qualsiasi richiesta. Serve agli host che non hanno elicitation né una finestra di sistema e raccolgono il sì nella chat (Grok Bot su Linux, che ha anche un proprio livello di approvazione delle chiamate MCP). L'anteprima, nei campi `human_confirmation` e `instructions`, dice al modello di mostrare il testo all'utente e di richiamare il tool solo dopo un sì esplicito nella conversazione. Le istruzioni del server, in questa modalità, dicono la stessa cosa. Ogni esecuzione autorizzata così scrive una riga di audit su stderr (`conferma host accettata (fuori banda saltata)`, `via: host`), e all'avvio il server segnala che la conferma fuori banda è disattivata. Modalità `readonly` / `write` / `full`, `FIC_ENABLE_SEND`, `FIC_ENABLE_DELETE` e il rifiuto degli IBAN non dipendono da questo canale.
+
+Avvio su stdio:
+
+```bash
+FIC_ACCESS_TOKEN=... FIC_MODE=write FIC_CONFIRM_METHOD=host node dist/index.js
+```
 
 Il token garantisce che si esegua esattamente ciò che è stato mostrato; la conferma umana è l'autorizzazione. `destructiveHint: true` resta come livello in più (Claude Desktop chiede il permesso per la chiamata), e nel README si sconsiglia "consenti sempre".
 
@@ -255,7 +263,7 @@ Difese aggiuntive contro l'esfiltrazione:
 
 ### 3.6 Elicitation e coordinate bancarie
 
-L'elicitation è usata dalla 1.2.0 come canale principale della conferma umana (sezione 3.5), su entrambe le ere del protocollo. Se Claude Desktop non dichiara la capability, su macOS si ripiega sulla finestra di sistema; altrove la scrittura viene rifiutata.
+L'elicitation è usata dalla 1.2.0 come canale principale della conferma umana (sezione 3.5), su entrambe le ere del protocollo. Se il client non dichiara la capability, su macOS si ripiega sulla finestra di sistema; altrove la scrittura viene rifiutata. `FIC_CONFIRM_METHOD=host` è l'unica eccezione, e solo se impostata esplicitamente (sezione 3.5).
 
 Coordinate bancarie (`src/safety/bank.ts`): un account è già stato bloccato da Fatture in Cloud per "tentativo di inserimento di un IBAN non autorizzato" da una fattura creata via API. Regola semplice, senza eccezioni: nessun corpo in uscita contiene chiavi bancarie (`iban`, `bank_*`, BIC, ABI, CAB, beneficiario, anche in `ei_raw`) né testi con la forma di un IBAN (forma compatta, a gruppi di quattro, o spaziatura qualsiasi con lunghezza del paese e cifre di controllo valide). Il controllo è nel client HTTP, quindi vale per tutti i tool; duplicazione, conversione e modifica tolgono prima le coordinate copiate dal documento d'origine e del metodo di pagamento mandano solo l'`id`.
 
@@ -280,6 +288,7 @@ Coordinate bancarie (`src/safety/bank.ts`): un account è già stato bloccato da
 | `FIC_ACCESS_TOKEN` | obbligatoria | token personale; mai nei log |
 | `FIC_COMPANY_ID` | facoltativa | se manca e il token vede una sola azienda, si usa quella; se ne vede più di una, l'errore elenca le aziende disponibili |
 | `FIC_MODE` | `readonly` | `readonly`, `write`, `full` |
+| `FIC_CONFIRM_METHOD` | `auto` | `auto`, `elicitation`, `dialog`, `host`. `host` salta la conferma fuori banda (sezione 3.5); un valore non valido ricade su `auto` |
 | `FIC_DEFAULT_PAYMENT_ACCOUNT_ID` | facoltativa | conto di saldo usato quando si segna una rata pagata senza indicarlo |
 | `FIC_EMAIL_ALLOWED_RECIPIENTS` | vuota | indirizzi email extra ammessi per l'invio, separati da virgola |
 | `FIC_DOWNLOAD_DIR` | `~/Downloads/fattureincloud-mcp` | cartella per `fic_download_file` |

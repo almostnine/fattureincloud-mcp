@@ -2,6 +2,12 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it-IT/1.1.0/) e il progetto usa il [versionamento semantico](https://semver.org/lang/it/).
 
+## [1.4.0] - 2026-11-05
+
+### Aggiunto
+
+- `FIC_CONFIRM_METHOD=host`: conferma delle scritture nella chat dell'host, senza elicitation né finestra di macOS. Opt-in, il default resta `auto`. L'anteprima e il token restano (corpo esatto, monouso, 10 minuti); la scrittura parte con `dry_run: false` e un token valido. L'anteprima dice al modello di mostrare il testo e di ottenere un sì esplicito nella conversazione prima di eseguire. Ogni scrittura così autorizzata lascia una riga di audit su stderr. Pensato per Grok Bot su Linux, dove non c'è un canale fuori banda.
+
 ## [1.3.0] - 2026-10-23
 
 Crea fatture e aggiorna i pagamenti delle rate in modalità `write`, senza mai inviare: l'invio allo SDI si fa dal pannello di Fatture in Cloud.
