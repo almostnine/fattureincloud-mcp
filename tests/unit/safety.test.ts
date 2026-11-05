@@ -29,9 +29,13 @@ describe('config', () => {
   it('legge il metodo di conferma umana e ricade su auto', () => {
     expect(loadConfig({}).confirmMethod).toBe('auto');
     expect(loadConfig({ FIC_CONFIRM_METHOD: 'Dialog' }).confirmMethod).toBe('dialog');
+    const host = loadConfig({ FIC_CONFIRM_METHOD: 'Host' });
+    expect(host.confirmMethod).toBe('host');
+    expect(host.warnings).toEqual([]);
     const bad = loadConfig({ FIC_CONFIRM_METHOD: 'token' });
     expect(bad.confirmMethod).toBe('auto');
     expect(bad.warnings[0]).toContain('FIC_CONFIRM_METHOD');
+    expect(bad.warnings[0]).toContain('host');
     expect(loadConfig({ FIC_DOWNLOAD_RETENTION_DAYS: '30' }).downloadRetentionDays).toBe(30);
     expect(loadConfig({}).downloadRetentionDays).toBeUndefined();
   });

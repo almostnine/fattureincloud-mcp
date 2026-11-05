@@ -18,6 +18,11 @@ async function main(): Promise<void> {
   const log = createLogger(config.logLevel, [config.token]);
   for (const w of config.warnings) log.warn(w);
   for (const w of extraToolsWarnings(config)) log.warn(w);
+  if (config.confirmMethod === 'host') {
+    log.warn(
+      'FIC_CONFIRM_METHOD=host: conferma fuori banda disattivata. Una scrittura parte con il token dell’anteprima (dry_run: false); il sì è quello dato in chat.',
+    );
+  }
   if (config.downloadRetentionDays) {
     const removed = cleanupDownloads(resolve(config.downloadDir), config.downloadRetentionDays);
     if (removed) log.info('file scaricati rimossi', { removed, days: config.downloadRetentionDays });

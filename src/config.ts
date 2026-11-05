@@ -40,7 +40,7 @@ export interface Config {
 const MODES: readonly Mode[] = ['readonly', 'write', 'full'];
 const CACHE_MODES: readonly CacheMode[] = ['memory', 'disk', 'off'];
 const LOG_LEVELS: readonly LogLevel[] = ['error', 'warn', 'info', 'debug'];
-const CONFIRM_METHODS: readonly ConfirmMethod[] = ['auto', 'elicitation', 'dialog'];
+const CONFIRM_METHODS: readonly ConfirmMethod[] = ['auto', 'elicitation', 'dialog', 'host'];
 
 function clean(value: string | undefined): string | undefined {
   const v = value?.trim();

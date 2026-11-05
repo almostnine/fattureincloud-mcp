@@ -3,7 +3,7 @@
   "manifest_version": "0.3",
   "name": "fattureincloud-mcp-server",
   "display_name": "Fatture in Cloud MCP (non ufficiale)",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Fatture, rate, incassi, clienti e situazione di Fatture in Cloud dentro Claude. Sola lettura di default.",
   "long_description": "Server MCP non ufficiale per l'API v2 di Fatture in Cloud: copre 117 delle 123 operazioni dell'API (conti di saldo, metodi di pagamento e recupero dal cestino restano solo nell'app web).\n\n- **Sola lettura di default**: in modalità `readonly` i tool di scrittura e di invio non esistono proprio.\n- **Modalità `write`**: creazione e modifica di documenti e anagrafiche, rate pagate o non pagate. Ogni scrittura parte da un'anteprima e si esegue solo dopo la tua conferma, chiesta direttamente a te (elicitation di Claude Desktop o finestra di macOS): Claude non può darla al posto tuo. Cancellazioni solo se le attivi.\n- **Modalità `full`**: anche invio allo SDI ed email, con la stessa conferma, solo se attivi gli invii (spenti di default: le fatture si inviano dal pannello di Fatture in Cloud).\n- **Mai IBAN**: il server non invia coordinate bancarie a Fatture in Cloud; i documenti usano solo il metodo di pagamento configurato.\n- Testi provenienti da Fatture in Cloud delimitati come dati, nessuna cache su disco di dati personali, nessuna telemetria: il server parla solo con api-v2.fattureincloud.it.\n\nNon affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: https://github.com/almostnine/fattureincloud-mcp",
   "author": {
@@ -199,7 +199,7 @@
     "fic_confirm_method": {
       "type": "string",
       "title": "Conferma delle scritture",
-      "description": "auto (default): richiesta di conferma in Claude Desktop se supportata, altrimenti finestra di macOS; elicitation: solo in Claude Desktop; dialog: solo finestra di macOS. Senza un canale disponibile le scritture vengono rifiutate.",
+      "description": "auto (default): richiesta di conferma in Claude Desktop se supportata, altrimenti finestra di macOS; elicitation: solo in Claude Desktop; dialog: solo finestra di macOS. Senza un canale le scritture vengono rifiutate. host (sconsigliato qui): salta la conferma fuori banda e accetta il token dell’anteprima; solo per host che confermano in chat, per esempio Grok Bot.",
       "default": "auto",
       "required": false
     },

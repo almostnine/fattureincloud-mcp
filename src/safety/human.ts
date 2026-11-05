@@ -21,9 +21,13 @@ import { sanitizeText } from './untrusted.js';
  *    2026-07-28 con un risultato `input_required` che il client soddisfa e poi ripete la chiamata;
  * 2. su macOS, una finestra di dialogo di sistema (osascript) con "Annulla" come pulsante predefinito;
  * 3. altrimenti la scrittura viene rifiutata.
+ *
+ * `FIC_CONFIRM_METHOD=host` è l'unica eccezione, e solo se impostata: non c'è un canale fuori banda
+ * (host come Grok Bot, senza elicitation e senza finestra di macOS). Il sì è quello dato in chat;
+ * qui si esegue se il token dell'anteprima è valido, e si scrive una riga di audit su stderr.
  */
 
-export type ConfirmMethod = 'auto' | 'elicitation' | 'dialog';
+export type ConfirmMethod = 'auto' | 'elicitation' | 'dialog' | 'host';
 
 /** Canale della singola chiamata di tool verso il client, ricavato dal contesto della richiesta MCP. */
 export interface HumanChannel {
@@ -107,7 +111,9 @@ export class HumanConfirm {
   }
 
   /** Canale che verrà usato per la conferma, o undefined se non ce n'è nessuno. */
-  channelFor(channel: HumanChannel | undefined): 'elicitation' | 'dialog' | undefined {
+  channelFor(channel: HumanChannel | undefined): 'elicitation' | 'dialog' | 'host' | undefined {
+    // Opt-in esplicito: non ripiega su elicitation o sulla finestra, anche se ci fossero.
+    if (this.method === 'host') return 'host';
     if (this.method !== 'dialog' && channel?.elicitation) return 'elicitation';
     if (this.method !== 'elicitation' && this.dialogAvailable()) return 'dialog';
     return undefined;
@@ -120,9 +126,19 @@ export class HumanConfirm {
         return 'Al momento di eseguire, Claude Desktop mostrerà all’utente questo testo con la casella "Confermo": solo la sua spunta autorizza l’operazione.';
       case 'dialog':
         return 'Al momento di eseguire, il Mac mostrerà all’utente una finestra di sistema con questo testo e i pulsanti "Annulla" e "Conferma": solo il suo clic su "Conferma" autorizza l’operazione.';
+      case 'host':
+        return 'FIC_CONFIRM_METHOD=host: nessuna conferma fuori banda (niente elicitation, niente finestra). Mostra confirmation_text all’utente e ottieni un sì esplicito nella conversazione prima di richiamare con il token (e dry_run: false, se il tool lo ha). Senza quel sì non eseguire: il token da solo non autorizza.';
       default:
         return this.unavailableMessage();
     }
+  }
+
+  /** Istruzioni dell'anteprima per il modello. In host il server non farà altre domande. */
+  previewInstructions(channel: HumanChannel | undefined, executeHint: string): string {
+    if (this.channelFor(channel) === 'host') {
+      return `Mostra confirmation_text all’utente e attendi un sì esplicito nella conversazione. Solo dopo quel sì richiama con gli stessi parametri e ${executeHint}. In modalità host il server non fa altre domande: un token valido esegue subito la scrittura. Senza il sì dell’utente non richiamare.`;
+    }
+    return `Mostra l’anteprima all’utente. Se vuole procedere, richiama con gli stessi parametri e ${executeHint}: il server chiederà allora la conferma direttamente all’utente; senza la sua conferma non viene eseguito nulla.`;
   }
 
   private unavailableMessage(): string {
@@ -137,14 +153,24 @@ export class HumanConfirm {
    * Chiede la conferma e ritorna solo se la persona ha confermato; altrimenti lancia `refused`.
    * Sull'era 2026-07-28 la prima volta lancia `InputRequiredSignal`: il client chiede alla persona e
    * ripete la chiamata con la risposta. `binding` lega la risposta a questa operazione esatta.
+   * Con `FIC_CONFIRM_METHOD=host` non chiede nulla: ritorna subito e scrive l'audit su stderr.
    */
   async confirm(channel: HumanChannel | undefined, prompt: HumanPrompt, binding: string): Promise<void> {
     const how = this.channelFor(channel);
+    if (how === 'host') return this.viaHost(prompt);
     if (how === 'elicitation') return this.viaElicitation(channel!, prompt, binding);
     if (how === 'dialog') return this.viaDialog(prompt);
     throw refused(
       `${this.unavailableMessage()} Per scrivere in Fatture in Cloud usa un client con elicitation (Claude Desktop aggiornato) oppure macOS.`,
     );
+  }
+
+  /**
+   * La conferma è già avvenuta nella chat dell'host. Non chiede nulla fuori banda: il token è stato
+   * verificato da chi chiama, prima di arrivare qui. La riga di audit resta su stderr a ogni livello di log.
+   */
+  private viaHost(prompt: HumanPrompt): void {
+    this.log.audit('conferma host accettata (fuori banda saltata)', { via: 'host', what: prompt.title });
   }
 
   private params(prompt: HumanPrompt): ElicitRequestFormParams {

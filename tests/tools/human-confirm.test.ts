@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { silentLogger } from '../../src/log.js';
+import { createLogger, silentLogger } from '../../src/log.js';
 import { HumanConfirm } from '../../src/safety/human.js';
 import { CLIENT_ROSSI, page } from '../fixtures/issued.js';
 import { call, connect, fakeDialog, testApp } from '../helpers/app.js';
@@ -69,6 +69,9 @@ describe('conferma umana delle scritture', () => {
     });
     const preview = await call(client, 'fic_create_entity', NEW_CLIENT);
     expect(preview.data.human_confirmation).toContain('Confermo');
+    expect(preview.data.instructions).toContain('chiederà allora la conferma direttamente');
+    expect(client.getInstructions()).toContain('finestra che il modello non può compilare');
+    expect(client.getInstructions()).not.toContain('FIC_CONFIRM_METHOD=host');
     const args = { ...NEW_CLIENT, dry_run: false, confirm: preview.data.confirm_token };
     const done = await call(client, 'fic_create_entity', args);
     expect(done.data, done.text).toMatchObject({ created: true, id: 700 });
@@ -194,6 +197,82 @@ describe('conferma umana delle scritture', () => {
     expect(writes(fic)).toHaveLength(0);
   });
 
+  it('FIC_CONFIRM_METHOD=host esegue col token, senza elicitation né finestra, una sola volta', async () => {
+    const fic = entityFic();
+    const { app, dialogs } = testApp({
+      fic,
+      mode: 'write',
+      platform: 'linux',
+      config: { confirmMethod: 'host' },
+    });
+    const asked: string[] = [];
+    const client = await connect(app, {
+      elicitation: (p) => {
+        asked.push(p.message);
+        return ACCEPT();
+      },
+    });
+    expect(client.getInstructions()).toContain('sì esplicito');
+    expect(client.getInstructions()).not.toContain('finestra che il modello non può compilare');
+    const preview = await call(client, 'fic_create_entity', NEW_CLIENT);
+    expect(preview.data.human_confirmation).toContain('FIC_CONFIRM_METHOD=host');
+    expect(preview.data.human_confirmation).toContain('sì esplicito');
+    expect(preview.data.instructions).toContain('sì esplicito');
+    expect(preview.data.instructions).not.toContain('chiederà allora');
+    const onlyPreview = await call(client, 'fic_create_entity', { ...NEW_CLIENT, dry_run: false });
+    expect(onlyPreview.data).toMatchObject({ dry_run: true, created: false });
+    const args = { ...NEW_CLIENT, dry_run: false, confirm: preview.data.confirm_token };
+    const done = await call(client, 'fic_create_entity', args);
+    expect(done.data, done.text).toMatchObject({ created: true, id: 700 });
+    expect(asked).toHaveLength(0);
+    expect(dialogs).toHaveLength(0);
+    expect(writes(fic)).toHaveLength(1);
+    const again = await call(client, 'fic_create_entity', args);
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain('già stato usato');
+    expect(writes(fic)).toHaveLength(1);
+  });
+
+  it('in modalità host un corpo diverso o un token non valido non scrive', async () => {
+    const fic = entityFic();
+    const { app, dialogs } = testApp({
+      fic,
+      mode: 'write',
+      platform: 'darwin',
+      config: { confirmMethod: 'host' },
+    });
+    const client = await connect(app);
+    const preview = await call(client, 'fic_create_entity', NEW_CLIENT);
+    const changed = await call(client, 'fic_create_entity', {
+      ...NEW_CLIENT,
+      name: 'Altro Nome Srl',
+      dry_run: false,
+      confirm: preview.data.confirm_token,
+    });
+    const forged = await call(client, 'fic_create_entity', {
+      ...NEW_CLIENT,
+      dry_run: false,
+      confirm: 'ENT-new-client-zzzz-deadbeefdead',
+    });
+    expect(changed.isError).toBe(true);
+    expect(changed.text).toContain('non corrisponde');
+    expect(forged.isError).toBe(true);
+    expect(dialogs).toHaveLength(0);
+    expect(writes(fic)).toHaveLength(0);
+  });
+
+  it('host non accende le scritture in readonly né gli invii senza FIC_ENABLE_SEND', async () => {
+    const ro = testApp({ mode: 'readonly', config: { confirmMethod: 'host', enableSend: true } });
+    const roNames = (await (await connect(ro.app)).listTools()).tools.map((t) => t.name);
+    expect(roNames).not.toContain('fic_create_entity');
+    expect(roNames).not.toContain('fic_send_einvoice');
+    const full = testApp({ mode: 'full', config: { confirmMethod: 'host', enableSend: false } });
+    const fullNames = (await (await connect(full.app)).listTools()).tools.map((t) => t.name);
+    expect(fullNames).toContain('fic_create_entity');
+    expect(fullNames).not.toContain('fic_send_einvoice');
+    expect(fullNames).not.toContain('fic_delete');
+  });
+
   it('se il corpo cambia dopo l’anteprima il token non vale e la persona non viene nemmeno interpellata', async () => {
     const fic = entityFic();
     const { app, dialogs } = testApp({ fic, mode: 'write' });
@@ -247,6 +326,33 @@ describe('conferma umana delle scritture', () => {
     expect(upRes.isError).toBe(true);
     expect(delRes.isError).toBe(true);
     expect(writes(fic)).toHaveLength(0);
+  });
+});
+
+describe('conferma host', () => {
+  it('salta elicitation e finestra e scrive una riga di audit su stderr', async () => {
+    const lines: string[] = [];
+    let dialogCalled = false;
+    const human = new HumanConfirm({
+      method: 'host',
+      sign: (t) => t,
+      log: createLogger('error', [], (line) => lines.push(line)),
+      platform: 'darwin',
+      dialog: async () => {
+        dialogCalled = true;
+        return { code: 0, stdout: 'button returned:Conferma, gave up:false\n' };
+      },
+    });
+    const channel = { elicitation: true as const };
+    expect(human.channelFor(channel)).toBe('host');
+    expect(human.describe(channel)).toContain('sì esplicito');
+    await human.confirm(channel, { title: 'Nuovo cliente', text: 'ANTEPRIMA' }, 'binding');
+    expect(dialogCalled).toBe(false);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('AUDIT');
+    expect(lines[0]).toContain('conferma host accettata (fuori banda saltata)');
+    expect(lines[0]).toContain('"via":"host"');
+    expect(lines[0]).toContain('Nuovo cliente');
   });
 });
 

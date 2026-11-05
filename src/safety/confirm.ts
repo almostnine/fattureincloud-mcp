@@ -10,8 +10,9 @@ import { refused } from '../api/errors.js';
  * il modello non può fabbricarlo, e se documento o parametri cambiano il token non vale più.
  *
  * Il token NON autorizza nulla da solo: il modello lo riceve e potrebbe usarlo senza chiedere. Ogni
- * esecuzione richiede anche la conferma umana fuori banda (vedi `human.ts`); il token garantisce solo che
- * la persona confermi esattamente il corpo mostrato nell'anteprima.
+ * esecuzione richiede anche la conferma umana fuori banda (vedi `human.ts`), salvo `FIC_CONFIRM_METHOD=host`,
+ * dove il sì è quello dato nella chat dell'host. Il token garantisce sempre che si esegua esattamente il
+ * corpo mostrato nell'anteprima.
  */
 
 export const CONFIRM_TTL_MS = 10 * 60 * 1000;

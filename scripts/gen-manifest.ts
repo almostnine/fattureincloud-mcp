@@ -101,7 +101,7 @@ Non affiliato a TeamSystem né a Fatture in Cloud. Codice e documentazione: ${re
       type: 'string',
       title: 'Conferma delle scritture',
       description:
-        'auto (default): richiesta di conferma in Claude Desktop se supportata, altrimenti finestra di macOS; elicitation: solo in Claude Desktop; dialog: solo finestra di macOS. Senza un canale disponibile le scritture vengono rifiutate.',
+        'auto (default): richiesta di conferma in Claude Desktop se supportata, altrimenti finestra di macOS; elicitation: solo in Claude Desktop; dialog: solo finestra di macOS. Senza un canale le scritture vengono rifiutate. host (sconsigliato qui): salta la conferma fuori banda e accetta il token dell’anteprima; solo per host che confermano in chat, per esempio Grok Bot.',
       default: 'auto',
       required: false,
     },
@@ -186,7 +186,8 @@ const server = {
         },
         {
           name: 'FIC_CONFIRM_METHOD',
-          description: 'conferma umana delle scritture: auto (default), elicitation o dialog (macOS)',
+          description:
+            'conferma delle scritture: auto (default), elicitation, dialog (macOS) o host (sì in chat, opt-in)',
           isRequired: false,
           format: 'string',
           default: 'auto',

@@ -7,8 +7,8 @@ import { CLOSE, OPEN } from '../safety/untrusted.js';
 import type { ToolCall } from './define.js';
 
 /**
- * Flusso comune di ogni scrittura: anteprima con token, poi esecuzione con token valido E conferma umana
- * fuori banda. Il token lega l'anteprima al corpo esatto; la conferma umana è l'autorizzazione.
+ * Flusso comune di ogni scrittura: anteprima con token, poi esecuzione con token valido e, salvo
+ * `FIC_CONFIRM_METHOD=host`, conferma umana fuori banda. Il token lega l'anteprima al corpo esatto.
  */
 
 export const confirmSchema = z
@@ -47,7 +47,7 @@ export function previewFields(
     confirm_token: app.confirm.issue(p.action, p.id, p.state, p.params),
     confirmation_text: p.prompt.text,
     human_confirmation: app.human.describe(call.human),
-    instructions: `Mostra l’anteprima all’utente. Se vuole procedere, richiama con gli stessi parametri e ${executeHint}: il server chiederà allora la conferma direttamente all’utente; senza la sua conferma non viene eseguito nulla.`,
+    instructions: app.human.previewInstructions(call.human, executeHint),
   };
 }
 
